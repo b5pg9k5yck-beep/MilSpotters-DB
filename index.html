@@ -5,7 +5,315 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
 <meta name="theme-color" content="#080f1e"/>
 <title>Military Aviation Spotters Database v8</title>
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script>
+// ═══════════════════════════════════════════════════════════
+// Embedded Supabase Client v2 — no CDN required
+// Handles: auth, REST queries, RPC, realtime session
+// ═══════════════════════════════════════════════════════════
+(function (global) {
+  'use strict';
+
+  function createClient(supabaseUrl, supabaseKey) {
+    var url = supabaseUrl.replace(/\/$/, '');
+    var key = supabaseKey;
+    var currentSession = null;
+    var authListeners = [];
+    var SESSION_KEY = 'sb-' + url.replace(/https?:\/\//, '').split('.')[0] + '-auth-token';
+
+    // ── Storage ─────────────────────────────────────────────
+    function readSession() {
+      try { return JSON.parse(localStorage.getItem(SESSION_KEY)); } catch (e) { return null; }
+    }
+    function writeSession(s) {
+      try { localStorage.setItem(SESSION_KEY, JSON.stringify(s)); } catch (e) {}
+    }
+    function clearSession() {
+      try { localStorage.removeItem(SESSION_KEY); } catch (e) {}
+    }
+
+    // ── Notify listeners ────────────────────────────────────
+    function notify(event, session) {
+      currentSession = session;
+      authListeners.forEach(function (fn) {
+        try { fn(event, session); } catch (e) {}
+      });
+    }
+
+    // ── Core fetch ──────────────────────────────────────────
+    function sbFetch(path, options) {
+      options = options || {};
+      var token = (currentSession && currentSession.access_token) ? currentSession.access_token : key;
+      var headers = Object.assign({
+        'apikey': key,
+        'Authorization': 'Bearer ' + token
+      }, options.headers || {});
+
+      if (options.body) {
+        headers['Content-Type'] = 'application/json';
+      }
+
+      return fetch(url + path, {
+        method: options.method || 'GET',
+        headers: headers,
+        body: options.body || undefined
+      }).then(function (res) {
+        return res.text().then(function (text) {
+          var data = null;
+          try { data = text ? JSON.parse(text) : null; } catch (e) { data = text; }
+          if (!res.ok) {
+            var msg = (data && (data.error_description || data.message || data.error || data.msg)) || ('Error ' + res.status);
+            return { data: null, error: { message: msg, status: res.status }, count: null };
+          }
+          // Parse count from Content-Range header
+          var count = null;
+          var cr = res.headers.get('content-range');
+          if (cr) { var m = cr.match(/\/(\d+)$/); if (m) count = parseInt(m[1]); }
+          return { data: data, error: null, count: count };
+        });
+      }).catch(function (e) {
+        return { data: null, error: { message: 'Network error: ' + e.message }, count: null };
+      });
+    }
+
+    // ── Auth ────────────────────────────────────────────────
+    var auth = {
+      getSession: function () {
+        var stored = readSession();
+        if (stored && stored.access_token) {
+          currentSession = stored;
+          return Promise.resolve({ data: { session: stored }, error: null });
+        }
+        return Promise.resolve({ data: { session: null }, error: null });
+      },
+
+      getUser: function () {
+        var stored = readSession();
+        if (stored && stored.user) {
+          currentSession = stored;
+          return Promise.resolve({ data: { user: stored.user }, error: null });
+        }
+        return Promise.resolve({ data: { user: null }, error: null });
+      },
+
+      signInWithPassword: function (credentials) {
+        return sbFetch('/auth/v1/token?grant_type=password', {
+          method: 'POST',
+          body: JSON.stringify({ email: credentials.email, password: credentials.password })
+        }).then(function (r) {
+          if (r.error) return r;
+          writeSession(r.data);
+          notify('SIGNED_IN', r.data);
+          return { data: { session: r.data, user: r.data.user }, error: null };
+        });
+      },
+
+      signUp: function (credentials) {
+        var body = { email: credentials.email, password: credentials.password };
+        if (credentials.options && credentials.options.data) {
+          body.data = credentials.options.data;
+        }
+        return sbFetch('/auth/v1/signup', {
+          method: 'POST',
+          body: JSON.stringify(body)
+        });
+      },
+
+      signOut: function () {
+        var token = currentSession && currentSession.access_token;
+        clearSession();
+        currentSession = null;
+        notify('SIGNED_OUT', null);
+        if (token) {
+          sbFetch('/auth/v1/logout', {
+            method: 'POST',
+            headers: { 'Authorization': 'Bearer ' + token }
+          }).catch(function () {});
+        }
+        return Promise.resolve({ error: null });
+      },
+
+      onAuthStateChange: function (fn) {
+        authListeners.push(fn);
+        // Fire immediately with current state
+        var stored = readSession();
+        if (stored && stored.access_token) {
+          currentSession = stored;
+          setTimeout(function () { fn('SIGNED_IN', stored); }, 0);
+        } else {
+          setTimeout(function () { fn('INITIAL_SESSION', null); }, 0);
+        }
+        return {
+          data: {
+            subscription: {
+              unsubscribe: function () {
+                authListeners = authListeners.filter(function (f) { return f !== fn; });
+              }
+            }
+          }
+        };
+      }
+    };
+
+    // ── Query Builder ───────────────────────────────────────
+    function QueryBuilder(table, selectCols, countExact) {
+      this._table   = table;
+      this._select  = selectCols || '*';
+      this._filters = [];
+      this._order   = null;
+      this._rangeFrom = null;
+      this._rangeTo   = null;
+      this._single    = false;
+      this._count     = countExact || false;
+    }
+
+    QueryBuilder.prototype._clone = function () {
+      var q = new QueryBuilder(this._table, this._select, this._count);
+      q._filters  = this._filters.slice();
+      q._order    = this._order;
+      q._rangeFrom = this._rangeFrom;
+      q._rangeTo   = this._rangeTo;
+      q._single   = this._single;
+      return q;
+    };
+
+    QueryBuilder.prototype.eq = function (col, val) {
+      var q = this._clone();
+      q._filters.push(col + '=eq.' + encodeURIComponent(val));
+      return q;
+    };
+
+    QueryBuilder.prototype.ilike = function (col, val) {
+      var q = this._clone();
+      q._filters.push(col + '=ilike.' + encodeURIComponent(val));
+      return q;
+    };
+
+    QueryBuilder.prototype.not = function (col, op, val) {
+      var q = this._clone();
+      q._filters.push(col + '=not.' + op + '.' + encodeURIComponent(val));
+      return q;
+    };
+
+    QueryBuilder.prototype.or = function (str) {
+      var q = this._clone();
+      q._filters.push('or=(' + str + ')');
+      return q;
+    };
+
+    QueryBuilder.prototype.order = function (col, opts) {
+      var q = this._clone();
+      q._order = col + ((opts && opts.ascending === false) ? '.desc' : '.asc');
+      return q;
+    };
+
+    QueryBuilder.prototype.range = function (from, to) {
+      var q = this._clone();
+      q._rangeFrom = from;
+      q._rangeTo   = to;
+      return q;
+    };
+
+    QueryBuilder.prototype.limit = function (n) {
+      return this.range(0, n - 1);
+    };
+
+    QueryBuilder.prototype.single = function () {
+      var q = this._clone();
+      q._single = true;
+      return q._exec();
+    };
+
+    QueryBuilder.prototype._exec = function () {
+      var path = '/rest/v1/' + this._table + '?select=' + encodeURIComponent(this._select);
+      this._filters.forEach(function (f) { path += '&' + f; });
+      if (this._order) path += '&order=' + this._order;
+
+      var headers = {};
+      if (this._count)  headers['Prefer'] = 'count=exact';
+      if (this._single) headers['Accept'] = 'application/vnd.pgrst.object+json';
+      if (this._rangeFrom !== null) {
+        headers['Range'] = this._rangeFrom + '-' + this._rangeTo;
+      }
+
+      return sbFetch(path, { headers: headers });
+    };
+
+    QueryBuilder.prototype.then = function (resolve, reject) {
+      return this._exec().then(resolve, reject);
+    };
+
+    // ── from() ──────────────────────────────────────────────
+    function from(table) {
+      return {
+        select: function (cols, opts) {
+          return new QueryBuilder(table, cols || '*', opts && opts.count);
+        },
+
+        insert: function (data) {
+          return {
+            select: function () {
+              return {
+                single: function () {
+                  return sbFetch('/rest/v1/' + table + '?select=*', {
+                    method: 'POST',
+                    headers: { 'Prefer': 'return=representation' },
+                    body: JSON.stringify(data)
+                  }).then(function (r) {
+                    if (r.error) return r;
+                    var row = Array.isArray(r.data) ? r.data[0] : r.data;
+                    return { data: row, error: null };
+                  });
+                }
+              };
+            }
+          };
+        },
+
+        update: function (data) {
+          return {
+            eq: function (col, val) {
+              return {
+                select: function () {
+                  return {
+                    single: function () {
+                      return sbFetch(
+                        '/rest/v1/' + table + '?' + col + '=eq.' + encodeURIComponent(val) + '&select=*',
+                        {
+                          method: 'PATCH',
+                          headers: { 'Prefer': 'return=representation' },
+                          body: JSON.stringify(data)
+                        }
+                      ).then(function (r) {
+                        if (r.error) return r;
+                        var row = Array.isArray(r.data) ? r.data[0] : r.data;
+                        return { data: row, error: null };
+                      });
+                    }
+                  };
+                }
+              };
+            }
+          };
+        }
+      };
+    }
+
+    // ── rpc() ───────────────────────────────────────────────
+    function rpc(fnName, params) {
+      return sbFetch('/rest/v1/rpc/' + fnName, {
+        method: 'POST',
+        body: JSON.stringify(params || {})
+      });
+    }
+
+    return { auth: auth, from: from, rpc: rpc };
+  }
+
+  global.supabase = { createClient: createClient };
+
+}(window));
+
+</script>
 <style>
   /* ── Reset & base ── */
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
