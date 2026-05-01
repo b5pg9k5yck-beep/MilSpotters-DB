@@ -1616,6 +1616,7 @@ function showAddDupBanner(status, matches) {
       html += '<div style="background:#1a0505;border:1px solid #ef444433;border-radius:4px;padding:7px 10px;margin-bottom:4px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">';
       html += '<span style="color:#f1f5f9;font-weight:900;font-family:monospace">' + esc(m.registration) + '</span>';
       html += '<span style="background:' + c + '22;color:' + c + ';border:1px solid ' + c + '55;padding:1px 6px;font-size:10px;font-weight:800;border-radius:3px">' + esc(m.aircraft_type || '') + '</span>';
+      if (m.country) html += '<span style="color:#a78bfa;font-size:11px;font-weight:700">' + esc(m.country) + '</span>';
       if (m.spot) html += '<span style="color:#fbbf24;font-size:11px;font-weight:700">' + esc(m.spot) + '</span>';
       if (m.date) html += '<span style="color:#475569;font-size:11px;margin-left:auto;font-family:monospace">' + esc(String(m.date)) + '</span>';
       html += '</div>';
