@@ -1190,8 +1190,13 @@ async function handleLogin() {
   el('login-btn').textContent = 'SIGNING IN…';
 
   // Diagnose sb state visibly
-  if(typeof sb !== 'object' || sb === null || typeof sb.auth === 'undefined') {
-    authMsg('error', 'App not ready (sb=' + typeof sb + '). Please hard-refresh the page.');
+  if(typeof sb !== 'object' || sb === null) {
+    authMsg('error', 'App not ready. Please hard-refresh the page.');
+    el('login-btn').textContent = 'SIGN IN';
+    return;
+  }
+  if(!sb.auth || typeof sb.auth.signInWithPassword !== 'function') {
+    authMsg('error', 'Auth not ready. Keys: ' + Object.keys(sb).join(', '));
     el('login-btn').textContent = 'SIGN IN';
     return;
   }
@@ -2244,8 +2249,8 @@ document.addEventListener("DOMContentLoaded", function() {
     return;
   }
   wireEvents();
-  sb.auth.onAuthStateChange((_event, session) => onSession(session));
-  sb.auth.getSession().then(({ data: { session } }) => onSession(session));
+  sb.auth.onAuthStateChange(function(_event, session) { onSession(session); });
+  sb.auth.getSession().then(function(result) { onSession(result.data.session); });
 });
 </script>
 
