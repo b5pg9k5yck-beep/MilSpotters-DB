@@ -1007,6 +1007,7 @@ window.supabase = null;
 // ==================================================
 // CONFIGURATION  -  fill in your Supabase details here
 // ==================================================
+
 const SUPABASE_URL  = 'https://ielbsqnwftzlngnbkvbp.supabase.co';
 const SUPABASE_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImllbGJzcW53ZnR6bG5nbmJrdmJwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzcwNDM0OTgsImV4cCI6MjA5MjYxOTQ5OH0.TCIuD9SEqTJd7XNRqYG9te68ljdUKLTGPBebNHqwVt0';
 // Initialise Supabase client immediately  -  not in DOMContentLoaded
@@ -1182,21 +1183,27 @@ function authMsg(type, msg) {
 async function loadProfile() {
   const { data: { user } } = await sb.auth.getUser();
   if(!user) return null;
-  const token = user.access_token || SUPABASE_ANON;
-  const session = JSON.parse(localStorage.getItem('sb-' + SUPABASE_URL.replace(/https?:\/\//, '').split('.')[0] + '-auth-token') || '{}');
-  const accessToken = (session && session.access_token) ? session.access_token : SUPABASE_ANON;
+
+  // Get access token from our embedded client's stored session
+  const sessionKey = 'sb-' + SUPABASE_URL.replace(/https?:\/\//, '').split('.')[0] + '-auth-token';
+  let accessToken = SUPABASE_ANON;
+  try {
+    const stored = JSON.parse(localStorage.getItem(sessionKey) || 'null');
+    if(stored && stored.access_token) accessToken = stored.access_token;
+  } catch(_) {}
+
   const res = await fetch(
-    SUPABASE_URL + '/rest/v1/profiles?id=eq.' + encodeURIComponent(user.id) + '&select=*',
+    SUPABASE_URL + '/rest/v1/profiles?id=eq.' + encodeURIComponent(user.id) + '&select=*&limit=1',
     {
       headers: {
-        'apikey': SUPABASE_ANON,
-        'Authorization': 'Bearer ' + accessToken,
-        'Accept': 'application/vnd.pgrst.object+json'
+        'apikey':        SUPABASE_ANON,
+        'Authorization': 'Bearer ' + accessToken
       }
     }
   );
-  if(!res.ok) throw new Error('Failed to load profile: ' + res.status);
-  return await res.json();
+  if(!res.ok) throw new Error('Profile load failed: ' + res.status);
+  const rows = await res.json();
+  return rows && rows.length ? rows[0] : null;
 }
 
 async function handleLogin() {
@@ -1255,11 +1262,11 @@ async function handleRegister() {
 // ==================================================
 async function fetchBatch(page) {
   const f = buildFiltersObj();
-  const from = page * BATCH;
-  const to   = from + BATCH - 1;
+  const offset = page * BATCH;
 
-  // Build URL directly - more reliable than query builder chaining
+  // Build URL directly using PostgREST query params
   let path = '/rest/v1/sightings?select=*&order=registration.asc';
+  path += '&limit=' + BATCH + '&offset=' + offset;
 
   // Search filter
   if(f.search) {
@@ -1279,12 +1286,31 @@ async function fetchBatch(page) {
     else if (f.service === 'US')    path += '&service=neq.UK&service=neq.WORLD';
   }
 
-  const token = (sb && sb._session && sb._session.access_token) ? sb._session.access_token : SUPABASE_ANON;
+  // Get access token - try multiple possible storage keys
+  let accessToken = SUPABASE_ANON;
+  try {
+    const projectId = SUPABASE_URL.replace(/https?:\/\//, '').split('.')[0];
+    const keysToTry = [
+      'sb-' + projectId + '-auth-token',
+      'supabase.auth.token',
+      'sb-auth-token'
+    ];
+    for(const k of keysToTry) {
+      const raw = localStorage.getItem(k);
+      if(raw) {
+        const parsed = JSON.parse(raw);
+        const token = parsed && (parsed.access_token || (parsed.currentSession && parsed.currentSession.access_token));
+        if(token) { accessToken = token; break; }
+      }
+    }
+  } catch(_) {}
+
+  console.log('[fetchBatch] page=' + page + ' token=' + accessToken.substring(0,15) + '...');
+
   const res = await fetch(SUPABASE_URL + path, {
     headers: {
       'apikey':        SUPABASE_ANON,
-      'Authorization': 'Bearer ' + token,
-      'Range':         from + '-' + to,
+      'Authorization': 'Bearer ' + accessToken,
       'Prefer':        'count=exact'
     }
   });
@@ -1298,12 +1324,20 @@ async function fetchBatch(page) {
 
   const data = await res.json();
 
+  // Diagnostic - show what we got
+  if(!Array.isArray(data) || data.length === 0) {
+    console.log('[fetchBatch] Response:', JSON.stringify(data).substring(0, 200));
+    console.log('[fetchBatch] Status:', res.status);
+    console.log('[fetchBatch] Content-Range:', res.headers.get('content-range'));
+    console.log('[fetchBatch] Access token used:', accessToken.substring(0, 20) + '...');
+  }
+
   // Parse total count from Content-Range header
-  let count = data.length;
+  let count = data.length + offset;
   const cr = res.headers.get('content-range');
   if(cr) { const m = cr.match(/\/(\d+)$/); if(m) count = parseInt(m[1]); }
 
-  return { data: data || [], count };
+  return { data: Array.isArray(data) ? data : [], count };
 }
 
 async function checkDuplicate(reg, country) {
