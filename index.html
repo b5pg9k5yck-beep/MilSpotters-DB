@@ -410,7 +410,6 @@
     <div class="auth-title">MILITARY AVIATION SPOTTERS</div>
     <div class="auth-sub">DATABASE  -  UK AIRBASES 1988–2018</div>
 
-
 <div id="auth-error"  class="auth-error"  style="display:none"></div>
 <div id="auth-success"class="auth-success"style="display:none"></div>
 
@@ -440,7 +439,6 @@
   <button class="btn-primary" id="register-btn">REQUEST ACCESS</button>
   <button class="btn-secondary" id="show-login">BACK TO SIGN IN</button>
 </div>
-
 
   </div>
 </div>
@@ -1005,7 +1003,6 @@ window.supabase = null;
 // ==================================================
 // CONFIGURATION  -  fill in your Supabase details here
 // ==================================================
-
 const SUPABASE_URL  = 'https://ielbsqnwftzlngnbkvbp.supabase.co';
 const SUPABASE_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImllbGJzcW53ZnR6bG5nbmJrdmJwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzcwNDM0OTgsImV4cCI6MjA5MjYxOTQ5OH0.TCIuD9SEqTJd7XNRqYG9te68ljdUKLTGPBebNHqwVt0';
 // Initialise Supabase client immediately  -  not in DOMContentLoaded
@@ -1438,15 +1435,22 @@ async function buildKnownLists(data) {
 
     const headers = { 'apikey': SUPABASE_ANON, 'Authorization': 'Bearer ' + accessToken };
 
-    // Fetch all distinct values for each filter column
+    // Fetch all distinct values using SECURITY DEFINER function
     const fetchDistinct = async (col) => {
       const res = await fetch(
-        SUPABASE_URL + '/rest/v1/sightings?select=' + col + '&limit=10000',
-        { headers }
+        SUPABASE_URL + '/rest/v1/rpc/get_distinct_values',
+        {
+          method: 'POST',
+          headers: { ...headers, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ col_name: col })
+        }
       );
       if(!res.ok) return [];
       const rows = await res.json();
-      return [...new Set(rows.map(r=>r[col]).filter(Boolean))].sort((a,b)=>a.localeCompare(b, undefined, {sensitivity:'base'}));
+      return (Array.isArray(rows) ? rows : [])
+        .map(r => r.val)
+        .filter(v => v && v.toString().trim())
+        .sort((a,b) => a.toString().localeCompare(b.toString(), undefined, {sensitivity:'base'}));
     };
 
     const [types, spots, ops, countries] = await Promise.all([
