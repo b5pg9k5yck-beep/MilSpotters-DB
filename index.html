@@ -56,11 +56,16 @@ function sbFetch(path, options) {
     headers['Content-Type'] = 'application/json';
   }
 
+  var controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  var timer = controller ? setTimeout(function() { controller.abort(); }, 15000) : null;
+
   return fetch(url + path, {
     method: options.method || 'GET',
     headers: headers,
-    body: options.body || undefined
+    body: options.body || undefined,
+    signal: controller ? controller.signal : undefined
   }).then(function (res) {
+    if (timer) clearTimeout(timer);
     return res.text().then(function (text) {
       var data = null;
       try { data = text ? JSON.parse(text) : null; } catch (e) { data = text; }
@@ -68,14 +73,17 @@ function sbFetch(path, options) {
         var msg = (data && (data.error_description || data.message || data.error || data.msg)) || ('Error ' + res.status);
         return { data: null, error: { message: msg, status: res.status }, count: null };
       }
-      // Parse count from Content-Range header
       var count = null;
       var cr = res.headers.get('content-range');
       if (cr) { var m = cr.match(/\/(\d+)$/); if (m) count = parseInt(m[1]); }
       return { data: data, error: null, count: count };
     });
   }).catch(function (e) {
-    return { data: null, error: { message: 'Network error: ' + e.message }, count: null };
+    if (timer) clearTimeout(timer);
+    var msg = e.name === 'AbortError'
+      ? 'Request timed out. Check your internet connection and that your Supabase URL is correct.'
+      : 'Network error: ' + e.message;
+    return { data: null, error: { message: msg }, count: null };
   });
 }
 
@@ -100,16 +108,41 @@ var auth = {
   },
 
   signInWithPassword: function (credentials) {
-    return sbFetch('/auth/v1/token?grant_type=password', {
-      method: 'POST',
-      body: JSON.stringify({ email: credentials.email, password: credentials.password })
-    }).then(function (r) {
-      if (r.error) return r;
-      writeSession(r.data);
-      currentSession = r.data;
-      // Notify listeners after a brief delay to ensure they're set up
-      setTimeout(function() { notify('SIGNED_IN', r.data); }, 50);
-      return { data: { session: r.data, user: r.data.user }, error: null };
+    var self = this;
+    var authUrl = url + '/auth/v1/token?grant_type=password';
+    var payload = JSON.stringify({ email: credentials.email, password: credentials.password });
+
+    return new Promise(function(resolve) {
+      var xhr = new XMLHttpRequest();
+      xhr.open('POST', authUrl, true);
+      xhr.setRequestHeader('Content-Type', 'application/json');
+      xhr.setRequestHeader('apikey', key);
+      xhr.setRequestHeader('Authorization', 'Bearer ' + key);
+      xhr.timeout = 20000;
+
+      xhr.onload = function() {
+        var data = null;
+        try { data = JSON.parse(xhr.responseText); } catch(e) {}
+        if (xhr.status >= 200 && xhr.status < 300) {
+          writeSession(data);
+          currentSession = data;
+          setTimeout(function() { notify('SIGNED_IN', data); }, 50);
+          resolve({ data: { session: data, user: data ? data.user : null }, error: null });
+        } else {
+          var msg = (data && (data.error_description || data.message || data.error)) || ('Error ' + xhr.status);
+          resolve({ data: null, error: { message: msg } });
+        }
+      };
+
+      xhr.onerror = function() {
+        resolve({ data: null, error: { message: 'Network error — could not reach Supabase. Check your internet connection.' } });
+      };
+
+      xhr.ontimeout = function() {
+        resolve({ data: null, error: { message: 'Request timed out after 20 seconds. Check your internet connection.' } });
+      };
+
+      xhr.send(payload);
     });
   },
 
@@ -979,7 +1012,7 @@ max-height: 90vh;
 // CONFIGURATION — fill in your Supabase details here
 // ══════════════════════════════════════════════════
 const SUPABASE_URL  = 'https://ielbsqnwftzlngnbkvbp.supabase.co';
-const SUPABASE_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImllbGJzcW53ZnR6bG5nbmJrdmJwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzcwNDM0OTgsImV4cCI6MjA5MjYxOTQ5OH0.TCIuD9SEqTJd7XNRqYG9te68ljdUKLTGPBebNHqwVt0';
+const SUPABASE_ANON = 'PASTE_YOUR_ANON_KEY_HERE';
 
 // ══════════════════════════════════════════════════
 // CONSTANTS
