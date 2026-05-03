@@ -1007,7 +1007,6 @@ window.supabase = null;
 // ==================================================
 // CONFIGURATION  -  fill in your Supabase details here
 // ==================================================
-
 const SUPABASE_URL  = 'https://ielbsqnwftzlngnbkvbp.supabase.co';
 const SUPABASE_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImllbGJzcW53ZnR6bG5nbmJrdmJwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzcwNDM0OTgsImV4cCI6MjA5MjYxOTQ5OH0.TCIuD9SEqTJd7XNRqYG9te68ljdUKLTGPBebNHqwVt0';
 // Initialise Supabase client immediately  -  not in DOMContentLoaded
@@ -1118,7 +1117,7 @@ let dupTimer      = null;
 let dupBlocked    = false;
 
 // -- Filters state --
-const filters = { service:'', country:'', type:'', spot:'', ops:'', search:'' };
+const filters = { service:'', country:'', aircraft_type:'', spot:'', ops:'', search:'' };
 
 // ==================================================
 // HELPERS
@@ -1151,12 +1150,12 @@ function formatSpot(spot) {
 }
 function buildFiltersObj() {
   return {
-    search:   filters.search.trim()||undefined,
-    aircraft_type: filters.type||undefined,
-    spot:     filters.spot||undefined,
-    ops:      filters.ops||undefined,
-    country:  filters.country||undefined,
-    service:  filters.service||undefined,
+    search:       filters.search.trim()||undefined,
+    aircraft_type:filters.aircraft_type||undefined,
+    spot:         filters.spot||undefined,
+    ops:          filters.ops||undefined,
+    country:      filters.country||undefined,
+    service:      filters.service||undefined,
   };
 }
 
@@ -2061,7 +2060,7 @@ function toggleFilters() {
 }
 
 function countActiveFilters() {
-  return [filters.service,filters.country,filters.type,filters.spot,filters.ops]
+  return [filters.service,filters.country,filters.aircraft_type,filters.spot,filters.ops]
     .filter(v=>v).length;
 }
 
@@ -2082,7 +2081,7 @@ function applyFilter(key, val) {
 }
 
 function clearAllFilters() {
-  filters.service=filters.country=filters.type=filters.spot=filters.ops='';
+  filters.service=filters.country=filters.aircraft_type=filters.spot=filters.ops='';
   el('f-service').value=''; el('f-country').value='';
   el('f-type').value=''; el('f-spot').value=''; el('f-ops').value='';
   updateFilterBtn();
