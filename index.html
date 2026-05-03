@@ -106,7 +106,9 @@ var auth = {
     }).then(function (r) {
       if (r.error) return r;
       writeSession(r.data);
-      notify('SIGNED_IN', r.data);
+      currentSession = r.data;
+      // Notify listeners after a brief delay to ensure they're set up
+      setTimeout(function() { notify('SIGNED_IN', r.data); }, 50);
       return { data: { session: r.data, user: r.data.user }, error: null };
     });
   },
@@ -977,7 +979,7 @@ max-height: 90vh;
 // CONFIGURATION — fill in your Supabase details here
 // ══════════════════════════════════════════════════
 const SUPABASE_URL  = 'https://ielbsqnwftzlngnbkvbp.supabase.co';
-const SUPABASE_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImllbGJzcW53ZnR6bG5nbmJrdmJwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzcwNDM0OTgsImV4cCI6MjA5MjYxOTQ5OH0.TCIuD9SEqTJd7XNRqYG9te68ljdUKLTGPBebNHqwVt0';
+const SUPABASE_ANON = 'PASTE_YOUR_ANON_KEY_HERE';
 
 // ══════════════════════════════════════════════════
 // CONSTANTS
@@ -1153,7 +1155,13 @@ async function handleLogin() {
   if(!email||!pass) return authMsg('error','Please enter your email and password.');
   el('login-btn').textContent = 'SIGNING IN…';
   try {
-    await sb.auth.signInWithPassword({email, password:pass});
+    if(!sb) { authMsg('error','App not initialised. Please refresh the page.'); el('login-btn').textContent='SIGN IN'; return; }
+    const result = await sb.auth.signInWithPassword({email, password:pass});
+    if(result && result.error) {
+      authMsg('error', result.error.message || 'Login failed. Check your email and password.');
+      el('login-btn').textContent = 'SIGN IN';
+      return;
+    }
     // onAuthStateChange will handle the rest
   } catch(e) {
     authMsg('error', e.message||'Login failed.');
