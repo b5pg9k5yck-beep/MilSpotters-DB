@@ -1157,7 +1157,7 @@ async function handleLogin() {
   el('login-btn').textContent = 'SIGNING IN…';
 
   // Diagnose sb state visibly
-  if(typeof sb === 'undefined' || !sb) {
+  if(typeof sb !== 'object' || sb === null || typeof sb.auth === 'undefined') {
     authMsg('error', 'App not ready (sb=' + typeof sb + '). Please hard-refresh the page.');
     el('login-btn').textContent = 'SIGN IN';
     return;
