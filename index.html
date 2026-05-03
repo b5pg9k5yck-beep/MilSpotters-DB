@@ -1016,10 +1016,13 @@ const SUPABASE_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFz
 
 // Initialise Supabase client immediately — not in DOMContentLoaded
 // This ensures sb is ready before any user interaction
+var _sbError = null;
 let sb = (function() {
   try {
-    return supabase.createClient(SUPABASE_URL, SUPABASE_ANON);
+    var client = supabase.createClient(SUPABASE_URL, SUPABASE_ANON);
+    return client;
   } catch(e) {
+    _sbError = e.message;
     return null;
   }
 })();
@@ -1198,7 +1201,7 @@ async function handleLogin() {
   el('login-btn').textContent = 'SIGNING IN…';
 
   if(!sb || !sb.auth) {
-    authMsg('error', 'Not initialised — please refresh and try again.');
+    authMsg('error', 'Not initialised: ' + (_sbError || 'createClient returned null. Check your anon key.'));
     el('login-btn').textContent = 'SIGN IN';
     return;
   }
