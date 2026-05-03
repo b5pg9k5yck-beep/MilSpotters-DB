@@ -1,0 +1,2232 @@
+<!DOCTYPE html>
+
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<meta name="theme-color" content="#080f1e"/>
+<title>Military Aviation Spotters Database v8</title>
+<script>
+// Pre-assign so it exists even if IIFE fails
+window.supabase = null;
+// ═══════════════════════════════════════════════════════════
+// Embedded Supabase Client v2 — no CDN required
+// Handles: auth, REST queries, RPC, realtime session
+// ═══════════════════════════════════════════════════════════
+(function (global) {
+  'use strict';
+
+function createClient(supabaseUrl, supabaseKey) {
+var url = supabaseUrl.replace(//$/, ‘’);
+var key = supabaseKey;
+var currentSession = null;
+var authListeners = [];
+var SESSION_KEY = ‘sb-’ + url.replace(/https?:///, ‘’).split(’.’)[0] + ‘-auth-token’;
+
+```
+// ── Storage ─────────────────────────────────────────────
+function readSession() {
+  try { return JSON.parse(localStorage.getItem(SESSION_KEY)); } catch (e) { return null; }
+}
+function writeSession(s) {
+  try { localStorage.setItem(SESSION_KEY, JSON.stringify(s)); } catch (e) {}
+}
+function clearSession() {
+  try { localStorage.removeItem(SESSION_KEY); } catch (e) {}
+}
+
+// ── Notify listeners ────────────────────────────────────
+function notify(event, session) {
+  currentSession = session;
+  authListeners.forEach(function (fn) {
+    try { fn(event, session); } catch (e) {}
+  });
+}
+
+// ── Core fetch ──────────────────────────────────────────
+function sbFetch(path, options) {
+  options = options || {};
+  var token = (currentSession && currentSession.access_token) ? currentSession.access_token : key;
+  var headers = Object.assign({
+    'apikey': key,
+    'Authorization': 'Bearer ' + token
+  }, options.headers || {});
+
+  if (options.body) {
+    headers['Content-Type'] = 'application/json';
+  }
+
+  var controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  var timer = controller ? setTimeout(function() { controller.abort(); }, 15000) : null;
+
+  return fetch(url + path, {
+    method: options.method || 'GET',
+    headers: headers,
+    body: options.body || undefined,
+    signal: controller ? controller.signal : undefined
+  }).then(function (res) {
+    if (timer) clearTimeout(timer);
+    return res.text().then(function (text) {
+      var data = null;
+      try { data = text ? JSON.parse(text) : null; } catch (e) { data = text; }
+      if (!res.ok) {
+        var msg = (data && (data.error_description || data.message || data.error || data.msg)) || ('Error ' + res.status);
+        return { data: null, error: { message: msg, status: res.status }, count: null };
+      }
+      var count = null;
+      var cr = res.headers.get('content-range');
+      if (cr) { var m = cr.match(/\/(\d+)$/); if (m) count = parseInt(m[1]); }
+      return { data: data, error: null, count: count };
+    });
+  }).catch(function (e) {
+    if (timer) clearTimeout(timer);
+    var msg = e.name === 'AbortError'
+      ? 'Request timed out. Check your internet connection and that your Supabase URL is correct.'
+      : 'Network error: ' + e.message;
+    return { data: null, error: { message: msg }, count: null };
+  });
+}
+
+// ── Auth ────────────────────────────────────────────────
+var auth = {
+  getSession: function () {
+    var stored = readSession();
+    if (stored && stored.access_token) {
+      currentSession = stored;
+      return Promise.resolve({ data: { session: stored }, error: null });
+    }
+    return Promise.resolve({ data: { session: null }, error: null });
+  },
+
+  getUser: function () {
+    var stored = readSession();
+    if (stored && stored.user) {
+      currentSession = stored;
+      return Promise.resolve({ data: { user: stored.user }, error: null });
+    }
+    return Promise.resolve({ data: { user: null }, error: null });
+  },
+
+  signInWithPassword: function (credentials) {
+    var self = this;
+    var authUrl = url + '/auth/v1/token?grant_type=password';
+    var payload = JSON.stringify({ email: credentials.email, password: credentials.password });
+
+    return new Promise(function(resolve) {
+      var xhr = new XMLHttpRequest();
+      xhr.open('POST', authUrl, true);
+      xhr.setRequestHeader('Content-Type', 'application/json');
+      xhr.setRequestHeader('apikey', key);
+      xhr.setRequestHeader('Authorization', 'Bearer ' + key);
+      xhr.timeout = 20000;
+
+      xhr.onload = function() {
+        var data = null;
+        try { data = JSON.parse(xhr.responseText); } catch(e) {}
+        if (xhr.status >= 200 && xhr.status < 300) {
+          writeSession(data);
+          currentSession = data;
+          setTimeout(function() { notify('SIGNED_IN', data); }, 50);
+          resolve({ data: { session: data, user: data ? data.user : null }, error: null });
+        } else {
+          var msg = (data && (data.error_description || data.message || data.error)) || ('Error ' + xhr.status);
+          resolve({ data: null, error: { message: msg } });
+        }
+      };
+
+      xhr.onerror = function() {
+        resolve({ data: null, error: { message: 'Network error — could not reach Supabase. Check your internet connection.' } });
+      };
+
+      xhr.ontimeout = function() {
+        resolve({ data: null, error: { message: 'Request timed out after 20 seconds. Check your internet connection.' } });
+      };
+
+      xhr.send(payload);
+    });
+  },
+
+  signUp: function (credentials) {
+    var body = { email: credentials.email, password: credentials.password };
+    if (credentials.options && credentials.options.data) {
+      body.data = credentials.options.data;
+    }
+    return sbFetch('/auth/v1/signup', {
+      method: 'POST',
+      body: JSON.stringify(body)
+    });
+  },
+
+  signOut: function () {
+    var token = currentSession && currentSession.access_token;
+    clearSession();
+    currentSession = null;
+    notify('SIGNED_OUT', null);
+    if (token) {
+      sbFetch('/auth/v1/logout', {
+        method: 'POST',
+        headers: { 'Authorization': 'Bearer ' + token }
+      }).catch(function () {});
+    }
+    return Promise.resolve({ error: null });
+  },
+
+  onAuthStateChange: function (fn) {
+    authListeners.push(fn);
+    // Fire immediately with current state
+    var stored = readSession();
+    if (stored && stored.access_token) {
+      currentSession = stored;
+      setTimeout(function () { fn('SIGNED_IN', stored); }, 0);
+    } else {
+      setTimeout(function () { fn('INITIAL_SESSION', null); }, 0);
+    }
+    return {
+      data: {
+        subscription: {
+          unsubscribe: function () {
+            authListeners = authListeners.filter(function (f) { return f !== fn; });
+          }
+        }
+      }
+    };
+  }
+};
+
+// ── Query Builder ───────────────────────────────────────
+function QueryBuilder(table, selectCols, countExact) {
+  this._table   = table;
+  this._select  = selectCols || '*';
+  this._filters = [];
+  this._order   = null;
+  this._rangeFrom = null;
+  this._rangeTo   = null;
+  this._single    = false;
+  this._count     = countExact || false;
+}
+
+QueryBuilder.prototype._clone = function () {
+  var q = new QueryBuilder(this._table, this._select, this._count);
+  q._filters  = this._filters.slice();
+  q._order    = this._order;
+  q._rangeFrom = this._rangeFrom;
+  q._rangeTo   = this._rangeTo;
+  q._single   = this._single;
+  return q;
+};
+
+QueryBuilder.prototype.eq = function (col, val) {
+  var q = this._clone();
+  q._filters.push(col + '=eq.' + encodeURIComponent(val));
+  return q;
+};
+
+QueryBuilder.prototype.ilike = function (col, val) {
+  var q = this._clone();
+  q._filters.push(col + '=ilike.' + encodeURIComponent(val));
+  return q;
+};
+
+QueryBuilder.prototype.not = function (col, op, val) {
+  var q = this._clone();
+  q._filters.push(col + '=not.' + op + '.' + encodeURIComponent(val));
+  return q;
+};
+
+QueryBuilder.prototype.or = function (str) {
+  var q = this._clone();
+  q._filters.push('or=(' + str + ')');
+  return q;
+};
+
+QueryBuilder.prototype.order = function (col, opts) {
+  var q = this._clone();
+  q._order = col + ((opts && opts.ascending === false) ? '.desc' : '.asc');
+  return q;
+};
+
+QueryBuilder.prototype.range = function (from, to) {
+  var q = this._clone();
+  q._rangeFrom = from;
+  q._rangeTo   = to;
+  return q;
+};
+
+QueryBuilder.prototype.limit = function (n) {
+  return this.range(0, n - 1);
+};
+
+QueryBuilder.prototype.single = function () {
+  var q = this._clone();
+  q._single = true;
+  return q._exec();
+};
+
+QueryBuilder.prototype._exec = function () {
+  var path = '/rest/v1/' + this._table + '?select=' + encodeURIComponent(this._select);
+  this._filters.forEach(function (f) { path += '&' + f; });
+  if (this._order) path += '&order=' + this._order;
+
+  var headers = {};
+  if (this._count)  headers['Prefer'] = 'count=exact';
+  if (this._single) headers['Accept'] = 'application/vnd.pgrst.object+json';
+  if (this._rangeFrom !== null) {
+    headers['Range'] = this._rangeFrom + '-' + this._rangeTo;
+  }
+
+  return sbFetch(path, { headers: headers });
+};
+
+QueryBuilder.prototype.then = function (resolve, reject) {
+  return this._exec().then(resolve, reject);
+};
+
+// ── from() ──────────────────────────────────────────────
+function from(table) {
+  return {
+    select: function (cols, opts) {
+      return new QueryBuilder(table, cols || '*', opts && opts.count);
+    },
+
+    insert: function (data) {
+      return {
+        select: function () {
+          return {
+            single: function () {
+              return sbFetch('/rest/v1/' + table + '?select=*', {
+                method: 'POST',
+                headers: { 'Prefer': 'return=representation' },
+                body: JSON.stringify(data)
+              }).then(function (r) {
+                if (r.error) return r;
+                var row = Array.isArray(r.data) ? r.data[0] : r.data;
+                return { data: row, error: null };
+              });
+            }
+          };
+        }
+      };
+    },
+
+    update: function (data) {
+      return {
+        eq: function (col, val) {
+          return {
+            select: function () {
+              return {
+                single: function () {
+                  return sbFetch(
+                    '/rest/v1/' + table + '?' + col + '=eq.' + encodeURIComponent(val) + '&select=*',
+                    {
+                      method: 'PATCH',
+                      headers: { 'Prefer': 'return=representation' },
+                      body: JSON.stringify(data)
+                    }
+                  ).then(function (r) {
+                    if (r.error) return r;
+                    var row = Array.isArray(r.data) ? r.data[0] : r.data;
+                    return { data: row, error: null };
+                  });
+                }
+              };
+            }
+          };
+        }
+      };
+    }
+  };
+}
+
+// ── rpc() ───────────────────────────────────────────────
+function rpc(fnName, params) {
+  return sbFetch('/rest/v1/rpc/' + fnName, {
+    method: 'POST',
+    body: JSON.stringify(params || {})
+  });
+}
+
+return { auth: auth, from: from, rpc: rpc };
+```
+
+}
+
+global.supabase = { createClient: createClient };
+
+}(window));
+
+</script>
+<style>
+  /* ── Reset & base ── */
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg:       #080f1e;
+    --bg2:      #0c1528;
+    --bg3:      #0f172a;
+    --bg4:      #1a2744;
+    --border:   #1e293b;
+    --border2:  #334155;
+    --text:     #e2e8f0;
+    --text2:    #94a3b8;
+    --text3:    #64748b;
+    --text4:    #475569;
+    --amber:    #f59e0b;
+    --green:    #4ade80;
+    --blue:     #7dd3fc;
+    --purple:   #a78bfa;
+    --red:      #ef4444;
+    --cyan:     #38bdf8;
+    --font-mono: 'Courier New', Courier, monospace;
+    --font-ui:   system-ui, -apple-system, sans-serif;
+  }
+  html, body { height: 100%; background: var(--bg); color: var(--text); font-family: var(--font-mono); font-size: 13px; }
+  body { display: flex; flex-direction: column; min-height: 100vh; }
+  input, select, button { font-family: var(--font-mono); }
+  select option { background: var(--bg3); }
+  button { cursor: pointer; }
+  input:focus, select:focus { outline: none; }
+
+/* ── Views ── */
+.view { display: none; flex-direction: column; height: 100vh; }
+.view.active { display: flex; }
+
+/* ── AUTH ── */
+#auth-view {
+align-items: center; justify-content: center;
+background: radial-gradient(ellipse at 60% 40%, #0d1f3c 0%, var(–bg) 70%);
+padding: 16px;
+}
+.auth-card {
+background: var(–bg2); border: 2px solid var(–amber);
+width: 100%; max-width: 400px; padding: 32px 28px;
+box-shadow: 0 0 60px rgba(0,0,0,0.8);
+}
+.auth-icon { font-size: 36px; text-align: center; display: block; margin-bottom: 12px; }
+.auth-title { font-size: 16px; font-weight: 900; color: var(–amber); letter-spacing: 0.12em; text-align: center; margin-bottom: 4px; }
+.auth-sub { font-size: 10px; color: var(–text4); letter-spacing: 0.14em; text-align: center; margin-bottom: 24px; }
+.field-label { font-size: 10px; color: var(–text4); font-weight: 800; letter-spacing: 0.1em; display: block; margin-bottom: 5px; }
+.field-input {
+width: 100%; padding: 11px 13px; background: var(–bg);
+border: 1px solid var(–border); color: var(–text); font-size: 15px;
+font-family: var(–font-mono); margin-bottom: 14px; border-radius: 4px;
+transition: border-color 0.15s;
+}
+.field-input:focus { border-color: var(–amber); }
+.btn-primary {
+width: 100%; padding: 13px; background: #f59e0b22; border: 1px solid var(–amber);
+color: var(–amber); font-size: 12px; font-weight: 900; letter-spacing: 0.12em;
+border-radius: 4px; transition: background 0.15s; min-height: 48px; margin-top: 4px;
+}
+.btn-primary:hover { background: #f59e0b44; }
+.btn-secondary {
+width: 100%; padding: 11px; background: transparent; border: 1px solid var(–border2);
+color: var(–text3); font-size: 11px; font-weight: 700; letter-spacing: 0.08em;
+border-radius: 4px; margin-top: 10px; min-height: 48px;
+}
+.auth-toggle { font-size: 11px; color: var(–text4); text-align: center; margin-top: 18px; }
+.auth-link { color: var(–amber); text-decoration: underline; cursor: pointer; }
+.auth-error { font-size: 11px; color: var(–red); margin-bottom: 10px; padding: 8px 10px; background: #2a0a0a; border-radius: 4px; }
+.auth-success { font-size: 11px; color: var(–green); margin-bottom: 10px; padding: 8px 10px; background: #0a2a0a; border-radius: 4px; }
+
+/* ── PENDING ── */
+#pending-view { align-items: center; justify-content: center; padding: 16px; }
+.pending-card { background: var(–bg2); border: 2px solid var(–amber); max-width: 420px; width: 100%; padding: 32px 28px; text-align: center; }
+.pending-icon { font-size: 40px; margin-bottom: 16px; display: block; }
+
+/* ── HEADER ── */
+.app-header {
+background: linear-gradient(90deg,#0a0f1e,#111827,#0a0f1e);
+border-bottom: 2px solid var(–amber);
+padding: 12px 16px; flex-shrink: 0;
+display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+}
+.header-title { font-size: 15px; font-weight: 900; color: var(–amber); letter-spacing: 0.1em; }
+.header-sub { font-size: 10px; color: var(–text4); margin-top: 2px; }
+.header-actions { margin-left: auto; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.role-badge { font-size: 9px; padding: 2px 8px; border: 1px solid var(–border2); border-radius: 3px; }
+.hbtn {
+padding: 8px 13px; border-radius: 4px; font-size: 11px; font-weight: 800;
+letter-spacing: 0.07em; min-height: 40px; border: 1px solid;
+transition: background 0.15s;
+}
+
+/* ── FILTER BAR ── */
+.filter-bar { padding: 10px 14px; background: var(–bg2); border-bottom: 1px solid var(–border); flex-shrink: 0; }
+.filter-row { display: flex; gap: 8px; align-items: center; }
+.search-input {
+flex: 1; padding: 10px 12px; background: var(–bg3); border: 1px solid var(–border2);
+color: var(–text); font-size: 14px; font-family: var(–font-mono); border-radius: 4px;
+transition: border-color 0.15s;
+}
+.search-input:focus { border-color: var(–amber); }
+.filter-btn {
+padding: 10px 14px; border-radius: 4px; font-size: 12px; font-weight: 800;
+white-space: nowrap; min-height: 44px; transition: all 0.15s;
+}
+.counter-badge {
+padding: 8px 10px; background: var(–bg3); border: 1px solid var(–border);
+font-size: 11px; color: var(–text4); border-radius: 4px; white-space: nowrap;
+}
+.filter-grid {
+display: none; margin-top: 10px;
+grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 8px;
+}
+.filter-grid.open { display: grid; }
+.filter-sel {
+width: 100%; padding: 9px 10px; background: var(–bg3); border: 1px solid var(–border2);
+color: var(–text2); font-size: 13px; font-family: var(–font-mono); border-radius: 4px;
+}
+.clear-btn {
+width: 100%; padding: 9px; background: #ef444422; border: 1px solid var(–red);
+color: var(–red); font-size: 11px; font-weight: 800; border-radius: 4px; min-height: 42px;
+}
+
+/* ── TABLE ── */
+#records-container { flex: 1; overflow-y: auto; overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; }
+thead { position: sticky; top: 0; z-index: 10; }
+th {
+padding: 7px 10px; text-align: left; white-space: nowrap;
+background: var(–bg4); border-bottom: 2px solid #f59e0b44;
+color: var(–text3); font-size: 10px; font-weight: 800; letter-spacing: 0.1em;
+}
+tbody tr { cursor: pointer; border-bottom: 1px solid #0a0f1e; transition: background 0.08s; }
+tbody tr.us-row  { background: var(–bg3); }
+tbody tr.uk-row  { background: #0d1a0d; }
+tbody tr.wld-row { background: #120a1f; }
+tbody tr.sel-row { background: #1e3a5f !important; }
+tbody tr:nth-child(even).us-row  { background: #0d1526; }
+tbody tr:nth-child(even).uk-row  { background: #0a150a; }
+tbody tr:nth-child(even).wld-row { background: #0f0818; }
+td { padding: 5px 10px; font-size: 11px; vertical-align: middle; }
+.reg-cell { color: var(–text); font-weight: 800; white-space: nowrap; }
+.variant-cell { color: var(–text2); }
+.call-cell { color: var(–text2); }
+.call-cell.dim { color: #334155; }
+.tc-cell { color: var(–text4); }
+.country-cell { font-size: 10px; }
+.spot-cell .spot-name { font-size: 9px; color: #334155; line-height: 1.2; }
+.date-cell { color: var(–text4); white-space: nowrap; font-family: var(–font-mono); }
+.type-badge {
+display: inline-block; padding: 1px 7px; font-size: 9px; font-weight: 800;
+letter-spacing: 0.06em; border-radius: 3px; white-space: nowrap;
+border: 1px solid transparent;
+}
+.svc-code { font-size: 10px; font-weight: 700; }
+
+/* ── MOBILE CARDS ── */
+.card-list { display: none; }
+.record-card {
+border-bottom: 1px solid #0a0f1e; padding: 12px 14px;
+cursor: pointer; border-left: 4px solid transparent; transition: background 0.08s;
+}
+.record-card.us-row  { background: var(–bg3); }
+.record-card.uk-row  { background: #0d1a0d; }
+.record-card.wld-row { background: #120a1f; }
+.record-card.sel-row { background: #1e3a5f !important; }
+.card-top { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; flex-wrap: wrap; }
+.card-reg { color: var(–text); font-weight: 900; font-family: var(–font-mono); font-size: 14px; }
+.card-spot { color: var(–amber); font-weight: 800; font-size: 12px; margin-left: auto; }
+.card-bot { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+.card-type-text { color: var(–text2); font-size: 12px; }
+.card-date { color: var(–text4); font-size: 11px; font-family: var(–font-mono); margin-left: auto; }
+.card-detail {
+margin-top: 12px; padding-top: 12px; border-top: 1px solid rgba(255,255,255,0.05);
+display: none;
+}
+.card-detail.open { display: block; }
+.detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 12px; }
+.detail-item { padding-left: 8px; border-left: 2px solid rgba(255,255,255,0.08); }
+.detail-label { font-size: 9px; color: #334155; font-weight: 800; letter-spacing: 0.1em; margin-bottom: 2px; }
+.detail-val { font-size: 11px; font-family: var(–font-mono); }
+.edit-btn {
+padding: 10px 18px; border-radius: 4px; font-size: 12px; font-weight: 800;
+min-height: 44px; letter-spacing: 0.06em;
+}
+
+/* ── DESKTOP DETAIL PANEL ── */
+#detail-panel {
+display: none; background: var(–bg2); flex-shrink: 0;
+padding: 12px 16px; border-top: 2px solid transparent;
+}
+#detail-panel.open { display: block; }
+.detail-panel-top { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
+.detail-panel-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(155px, 1fr)); gap: 10px; }
+.dpanel-item { padding-left: 8px; border-left: 2px solid rgba(255,255,255,0.06); }
+.dpanel-label { font-size: 9px; color: #334155; font-weight: 800; letter-spacing: 0.1em; margin-bottom: 2px; }
+.dpanel-val { font-size: 11px; font-family: var(–font-mono); }
+.flag-badge { font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: 2px; border: 1px solid transparent; }
+
+/* ── INFINITE SCROLL ── */
+#scroll-sentinel { height: 1px; }
+#load-more-indicator { padding: 16px; text-align: center; color: var(–text4); font-size: 10px; letter-spacing: 0.12em; display: none; }
+#all-loaded-msg { padding: 16px; text-align: center; color: #1e293b; font-size: 10px; letter-spacing: 0.12em; display: none; }
+
+/* ── MODAL (bottom sheet on mobile, centered on desktop) ── */
+.modal-overlay {
+position: fixed; inset: 0; background: rgba(0,0,0,0.88);
+z-index: 100; display: none; align-items: flex-end; justify-content: center;
+}
+.modal-overlay.open { display: flex; }
+@media (min-width: 768px) {
+.modal-overlay { align-items: center; padding: 16px; }
+}
+.modal-sheet {
+background: var(–bg2); width: 100%; max-height: 92vh;
+border-radius: 16px 16px 0 0; border-top: 3px solid var(–amber);
+display: flex; flex-direction: column;
+box-shadow: 0 -8px 40px rgba(0,0,0,0.7);
+padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+@media (min-width: 768px) {
+.modal-sheet {
+max-width: 720px; border-radius: 8px;
+border: 2px solid var(–amber); border-top: 2px solid var(–amber);
+max-height: 90vh; box-shadow: 0 0 60px rgba(0,0,0,0.9);
+}
+}
+.modal-handle { display: flex; justify-content: center; padding: 10px 0 4px; }
+.modal-handle-bar { width: 40px; height: 4px; border-radius: 2px; background: var(–border2); }
+@media (min-width: 768px) { .modal-handle { display: none; } }
+.modal-header {
+padding: 13px 16px; border-bottom: 1px solid rgba(255,255,255,0.06);
+display: flex; align-items: center; justify-content: space-between; flex-shrink: 0;
+}
+.modal-title { font-size: 15px; font-weight: 900; letter-spacing: 0.08em; }
+.modal-sub { font-size: 11px; color: var(–text4); margin-top: 2px; }
+.modal-close {
+background: none; border: 1px solid var(–border2); color: var(–text3);
+padding: 6px 14px; font-size: 14px; font-family: var(–font-mono);
+border-radius: 4px; min-height: 44px; min-width: 44px;
+}
+.modal-body { overflow-y: auto; flex: 1; }
+.modal-footer {
+padding: 12px 16px; border-top: 1px solid var(–border);
+display: flex; gap: 10px; justify-content: flex-end; flex-wrap: wrap; flex-shrink: 0;
+}
+
+/* ── FORM ── */
+.form-preview {
+padding: 10px 16px; background: var(–bg);
+border-bottom: 1px solid rgba(255,255,255,0.04);
+display: none; align-items: center; gap: 10px; flex-wrap: wrap;
+}
+.form-preview.visible { display: flex; }
+.form-preview-reg { font-weight: 900; font-family: var(–font-mono); font-size: 15px; }
+.form-preview-spot { color: var(–amber); font-weight: 800; font-size: 13px; }
+.form-preview-date { color: var(–text4); font-size: 12px; font-family: var(–font-mono); }
+.form-grid { padding: 16px; display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+.form-field label { font-size: 11px; color: var(–text4); font-weight: 800; letter-spacing: 0.1em; display: block; margin-bottom: 5px; }
+.form-field label .req { color: var(–amber); margin-left: 3px; }
+.form-input {
+width: 100%; padding: 10px 12px; background: var(–bg);
+border: 1px solid var(–border); color: var(–text); font-size: 14px;
+font-family: var(–font-mono); border-radius: 4px; transition: border-color 0.15s;
+}
+.form-input:focus { border-color: var(–amber); }
+.form-input.error { border-color: var(–red); }
+.form-hint { font-size: 11px; color: #334155; margin-top: 4px; }
+.form-err-msg { font-size: 11px; color: var(–red); margin-top: 4px; }
+.modal-status { font-size: 12px; font-weight: 700; margin-right: auto; align-self: center; }
+.mbtn {
+padding: 10px 18px; border-radius: 4px; font-size: 12px; font-weight: 800;
+letter-spacing: 0.06em; min-height: 44px; border: 1px solid; transition: background 0.15s;
+}
+.mbtn:disabled { opacity: 0.45; cursor: default; }
+.mbtn-outline { background: transparent; border-color: var(–border2); color: var(–text3); }
+
+/* ── DUP BANNER ── */
+.dup-banner { margin: 0 16px 12px; padding: 11px 14px; border-radius: 6px; display: none; }
+.dup-checking { background: var(–bg3); border: 1px solid var(–border2); display: flex; align-items: center; gap: 8px; }
+.dup-clear { background: #0a2a0a; border: 1px solid #4ade8066; display: flex; align-items: center; gap: 10px; }
+.dup-found { background: #2a0a0a; border: 2px solid var(–red); }
+.dup-match { background: #1a0505; border: 1px solid #ef444433; border-radius: 4px; padding: 8px 12px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 6px; }
+.dup-match-reg { color: var(–text); font-weight: 900; font-family: var(–font-mono); font-size: 13px; }
+
+/* ── ADMIN ── */
+#admin-view { flex-direction: column; background: var(–bg); padding: 20px; overflow-y: auto; }
+.admin-header { border-bottom: 2px solid var(–amber); padding-bottom: 12px; margin-bottom: 18px; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; }
+.admin-title { font-size: 15px; font-weight: 900; color: var(–amber); letter-spacing: 0.1em; }
+.tab-bar { display: flex; gap: 6px; margin-bottom: 16px; }
+.tab {
+padding: 7px 16px; border: 1px solid; border-radius: 4px;
+font-size: 10px; font-weight: 800; letter-spacing: 0.08em;
+}
+.tab.active { border-color: var(–amber); background: #f59e0b22; color: var(–amber); }
+.tab:not(.active) { border-color: var(–border); background: transparent; color: var(–text3); }
+.user-card { background: var(–bg2); border: 1px solid var(–border); padding: 14px 16px; margin-bottom: 10px; border-radius: 4px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.user-name { font-weight: 800; color: var(–text); font-size: 13px; }
+.user-email { font-size: 11px; color: var(–text3); margin-top: 2px; }
+.user-meta { font-size: 10px; color: var(–text4); margin-top: 3px; }
+.user-actions { margin-left: auto; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.role-select { padding: 7px 10px; background: var(–bg3); border: 1px solid var(–border2); color: var(–text); font-size: 13px; border-radius: 4px; }
+.approve-btn { padding: 7px 16px; background: #4ade8022; border: 1px solid var(–green); color: var(–green); font-size: 11px; font-weight: 800; border-radius: 4px; min-height: 40px; }
+.perm-table { width: 100%; background: var(–bg2); border: 1px solid var(–border); border-radius: 4px; padding: 14px 16px; margin-top: 20px; }
+.perm-table h3 { font-size: 10px; color: var(–amber); font-weight: 800; letter-spacing: 0.12em; margin-bottom: 10px; }
+.perm-row { display: flex; gap: 10px; align-items: flex-start; margin-bottom: 8px; }
+.empty-msg { padding: 32px; text-align: center; color: #334155; font-size: 11px; letter-spacing: 0.12em; }
+
+/* ── RESPONSIVE ── */
+/* ── MOBILE (≤767px) ── */
+@media (max-width: 767px) {
+/* Hide desktop table and detail panel */
+table.desktop-table, #detail-panel { display: none !important; }
+.card-list { display: block; }
+
+```
+/* Header — stack title and actions */
+.app-header { padding: 10px 12px; gap: 8px; }
+.header-title { font-size: 12px; letter-spacing: 0.06em; }
+.header-sub   { font-size: 9px; }
+.header-actions { gap: 5px; }
+.hbtn { padding: 7px 10px; font-size: 10px; min-height: 38px; }
+.role-badge { font-size: 8px; padding: 2px 6px; }
+
+/* Auth card — full width, comfortable padding */
+.auth-card { padding: 24px 20px; max-width: 100%; }
+.auth-title { font-size: 14px; }
+.field-input { font-size: 16px; padding: 12px 14px; } /* 16px prevents iOS zoom */
+.btn-primary  { padding: 14px; font-size: 13px; min-height: 50px; }
+.btn-secondary{ padding: 12px; font-size: 12px; min-height: 46px; }
+
+/* Filter bar */
+.filter-bar { padding: 8px 12px; }
+.search-input { font-size: 16px; } /* prevent iOS zoom */
+.filter-btn { padding: 10px 12px; font-size: 11px; }
+.filter-grid { grid-template-columns: 1fr 1fr; gap: 8px; }
+.filter-sel { font-size: 14px; padding: 9px 8px; }
+
+/* Cards — comfortable touch targets */
+.record-card { padding: 12px 14px; }
+.card-reg { font-size: 15px; }
+.card-spot { font-size: 13px; }
+.detail-grid { grid-template-columns: 1fr 1fr; }
+.edit-btn { min-height: 44px; font-size: 13px; padding: 10px 16px; }
+
+/* Add/Edit modal — bottom sheet */
+.modal-overlay { align-items: flex-end; padding: 0; }
+.modal-sheet {
+  border-radius: 16px 16px 0 0;
+  border-top: 3px solid var(--amber);
+  border-left: none; border-right: none; border-bottom: none;
+  max-height: 92vh;
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+.modal-handle { display: flex; }
+.modal-footer { padding: 10px 14px; gap: 8px; }
+.mbtn { padding: 10px 14px; font-size: 12px; }
+
+/* Add form grid — single column on mobile */
+#add-form-body { grid-template-columns: 1fr !important; padding: 12px; gap: 12px; }
+#edit-fields   { grid-template-columns: 1fr !important; padding: 12px; gap: 12px; }
+
+/* Admin panel */
+.user-card { flex-direction: column; align-items: flex-start; }
+.user-actions { width: 100%; justify-content: flex-start; margin-top: 8px; }
+.tab { padding: 6px 12px; font-size: 10px; }
+
+/* Pending screen */
+.pending-card { padding: 24px 20px; }
+```
+
+}
+
+/* ── DESKTOP (≥768px) ── */
+@media (min-width: 768px) {
+.card-list { display: none; }
+table.desktop-table { display: table; }
+.modal-handle { display: none; }
+.modal-overlay { align-items: center; padding: 16px; }
+.modal-sheet {
+border-radius: 8px;
+border: 2px solid var(–amber);
+max-height: 90vh;
+}
+}
+
+/* ── SPINNER ── */
+@keyframes spin { to { transform: rotate(360deg); } }
+.spinner { display: inline-block; animation: spin 1s linear infinite; }
+</style>
+
+</head>
+<body>
+
+<!-- ════════════════════════════════════════════════════
+     AUTH VIEW
+════════════════════════════════════════════════════ -->
+
+<div id="auth-view" class="view active">
+  <div class="auth-card">
+    <span class="auth-icon">✈</span>
+    <div class="auth-title">MILITARY AVIATION SPOTTERS</div>
+    <div class="auth-sub">DATABASE — UK AIRBASES 1988–2018</div>
+
+```
+<div id="auth-error"  class="auth-error"  style="display:none"></div>
+<div id="auth-success"class="auth-success"style="display:none"></div>
+
+<!-- Login form -->
+<div id="login-form">
+  <label class="field-label" for="login-email">EMAIL ADDRESS</label>
+  <input class="field-input" type="email" id="login-email" placeholder="you@example.com" autocomplete="email"/>
+  <label class="field-label" for="login-pass">PASSWORD</label>
+  <input class="field-input" type="password" id="login-pass" placeholder="••••••••" autocomplete="current-password"/>
+  <button class="btn-primary" id="login-btn" onclick="handleLogin()">SIGN IN</button>
+  <div class="auth-toggle">No account? <span class="auth-link" id="show-register">Request access</span></div>
+</div>
+
+<!-- Register form -->
+<div id="register-form" style="display:none">
+  <label class="field-label" for="reg-name">FULL NAME</label>
+  <input class="field-input" type="text" id="reg-name" placeholder="Your full name" autocomplete="name"/>
+  <label class="field-label" for="reg-email">EMAIL ADDRESS</label>
+  <input class="field-input" type="email" id="reg-email" placeholder="you@example.com" autocomplete="email"/>
+  <label class="field-label" for="reg-pass">PASSWORD</label>
+  <input class="field-input" type="password" id="reg-pass" placeholder="Min. 8 characters" autocomplete="new-password"/>
+  <label class="field-label" for="reg-conf">CONFIRM PASSWORD</label>
+  <input class="field-input" type="password" id="reg-conf" placeholder="Repeat password" autocomplete="new-password"/>
+  <div style="font-size:10px;color:var(--text4);margin-bottom:14px;line-height:1.6">
+    Access is invite-only. Your account will be reviewed by an administrator before you can view the database.
+  </div>
+  <button class="btn-primary" id="register-btn">REQUEST ACCESS</button>
+  <button class="btn-secondary" id="show-login">BACK TO SIGN IN</button>
+</div>
+```
+
+  </div>
+</div>
+
+<!-- ════════════════════════════════════════════════════
+     PENDING VIEW
+════════════════════════════════════════════════════ -->
+
+<div id="pending-view" class="view">
+  <div class="pending-card">
+    <span class="pending-icon">⏳</span>
+    <div class="auth-title" style="margin-bottom:12px">AWAITING APPROVAL</div>
+    <p style="font-size:11px;color:var(--text3);line-height:1.7;margin-bottom:20px">
+      Your account request has been received.<br/>
+      An administrator will review and activate your access shortly.
+    </p>
+    <div id="pending-email" style="font-size:10px;color:var(--text4);margin-bottom:20px"></div>
+    <button class="btn-secondary" id="pending-signout">SIGN OUT</button>
+  </div>
+</div>
+
+<!-- ════════════════════════════════════════════════════
+     DATABASE VIEW
+════════════════════════════════════════════════════ -->
+
+<div id="db-view" class="view">
+
+  <!-- Header -->
+
+  <div class="app-header">
+    <div style="flex:1;min-width:0">
+      <div class="header-title" id="header-title">✈ MILITARY AVIATION SPOTTERS DATABASE</div>
+      <div class="header-sub">
+        <span style="color:var(--amber)" id="total-count">0</span> records ·
+        <span style="color:var(--blue)">🇺🇸 1,378</span> ·
+        <span style="color:var(--green)">🇬🇧 1,012</span> ·
+        <span style="color:var(--purple)">🌍 1,945</span>
+      </div>
+    </div>
+    <div class="header-actions">
+      <span class="role-badge" id="user-role-badge">VIEWER</span>
+      <button class="hbtn" id="add-btn" style="display:none;border-color:var(--green);background:#4ade8022;color:var(--green)" onclick="openAddModal()">+ ADD</button>
+      <button class="hbtn" id="admin-btn" style="display:none;border-color:var(--purple);background:#a78bfa22;color:var(--purple)">Admin</button>
+      <button class="hbtn" id="db-signout" style="border-color:var(--border2);background:transparent;color:var(--text3)">Out</button>
+    </div>
+  </div>
+
+  <!-- Filter bar -->
+
+  <div class="filter-bar">
+    <div class="filter-row">
+      <input class="search-input" type="search" id="search-input" placeholder="Search serial, callsign, type, country…"/>
+      <button class="filter-btn" id="filter-toggle-btn" style="border:1px solid var(--border2);background:transparent;color:var(--text3)">Filters</button>
+      <div class="counter-badge">
+        <span style="color:var(--amber);font-weight:800" id="loaded-count">0</span>
+        <span style="color:#334155" id="total-label"></span>
+      </div>
+    </div>
+    <div class="filter-grid" id="filter-grid">
+      <div>
+        <label class="field-label" style="margin-bottom:4px">Nation</label>
+        <select class="filter-sel" id="f-service">
+          <option value="">All Nations</option>
+          <option value="US">🇺🇸 US Forces</option>
+          <option value="UK">🇬🇧 UK Forces</option>
+          <option value="WORLD">🌍 World</option>
+        </select>
+      </div>
+      <div>
+        <label class="field-label" style="margin-bottom:4px">Country</label>
+        <select class="filter-sel" id="f-country"><option value="">All Countries</option></select>
+      </div>
+      <div>
+        <label class="field-label" style="margin-bottom:4px">Type</label>
+        <select class="filter-sel" id="f-type"><option value="">All Types</option></select>
+      </div>
+      <div>
+        <label class="field-label" style="margin-bottom:4px">Airfield</label>
+        <select class="filter-sel" id="f-spot"><option value="">All Airfields</option></select>
+      </div>
+      <div>
+        <label class="field-label" style="margin-bottom:4px">Service</label>
+        <select class="filter-sel" id="f-ops"><option value="">All Services</option></select>
+      </div>
+      <div style="display:flex;align-items:flex-end">
+        <button class="clear-btn" id="clear-filters-btn" style="display:none">Clear All</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Error -->
+
+  <div id="db-error" style="padding:8px 16px;color:var(--red);font-size:12px;background:#200a0a;display:none"></div>
+
+  <!-- Records area -->
+
+  <div id="records-container">
+
+```
+<!-- Desktop table -->
+<table class="desktop-table">
+  <thead>
+    <tr>
+      <th>SERIAL / REG</th><th>TYPE</th><th>VARIANT</th>
+      <th>CALLSIGN</th><th>T/C</th><th>SERVICE</th>
+      <th>UNIT / SQN</th><th>COUNTRY</th><th>SPOTTED AT</th><th>DATE</th>
+    </tr>
+  </thead>
+  <tbody id="table-body"></tbody>
+</table>
+
+<!-- Mobile cards -->
+<div class="card-list" id="card-list"></div>
+
+<!-- Infinite scroll -->
+<div id="scroll-sentinel"></div>
+<div id="load-more-indicator"><span class="spinner">⟳</span> LOADING MORE…</div>
+<div id="all-loaded-msg"></div>
+
+<!-- Loading state -->
+<div id="loading-msg" style="padding:60px;text-align:center;color:#334155;letter-spacing:0.15em">LOADING…</div>
+<div id="empty-msg" style="padding:60px;text-align:center;color:#334155;letter-spacing:0.12em;display:none">NO RECORDS MATCH YOUR FILTERS</div>
+```
+
+  </div>
+
+  <!-- Desktop detail panel -->
+
+  <div id="detail-panel">
+    <div class="detail-panel-top" id="detail-top"></div>
+    <div class="detail-panel-grid" id="detail-grid"></div>
+  </div>
+</div>
+
+<!-- ════════════════════════════════════════════════════
+     ADMIN VIEW
+════════════════════════════════════════════════════ -->
+
+<div id="admin-view" class="view">
+  <div class="admin-header">
+    <div>
+      <div class="admin-title">⚙ ADMIN PANEL</div>
+      <div style="font-size:10px;color:var(--text4);margin-top:2px;letter-spacing:0.08em">USER MANAGEMENT</div>
+    </div>
+    <div style="display:flex;gap:8px">
+      <button class="hbtn" id="admin-to-db" style="border-color:var(--cyan);background:#38bdf822;color:var(--cyan)">← Database</button>
+      <button class="hbtn" id="admin-signout" style="border-color:var(--red);background:#ef444422;color:var(--red)">Sign Out</button>
+    </div>
+  </div>
+  <div id="admin-msg" style="display:none;margin-bottom:12px;padding:8px 12px;border-radius:4px;font-size:12px"></div>
+  <div class="tab-bar">
+    <button class="tab active" id="tab-pending">PENDING</button>
+    <button class="tab" id="tab-all">ALL USERS</button>
+  </div>
+  <div id="users-list"></div>
+  <div class="perm-table">
+    <h3>ROLE PERMISSIONS</h3>
+    <div class="perm-row">
+      <span class="type-badge" style="background:#4ade8022;color:var(--green);border-color:#4ade8055">VIEWER</span>
+      <span style="font-size:11px;color:var(--text3)">Can view and search all records. Cannot add or edit.</span>
+    </div>
+    <div class="perm-row">
+      <span class="type-badge" style="background:#f59e0b22;color:var(--amber);border-color:#f59e0b55">EDITOR</span>
+      <span style="font-size:11px;color:var(--text3)">Can view, add new sightings, and edit existing records.</span>
+    </div>
+    <div class="perm-row">
+      <span class="type-badge" style="background:#a78bfa22;color:var(--purple);border-color:#a78bfa55">ADMIN</span>
+      <span style="font-size:11px;color:var(--text3)">Full access including user management.</span>
+    </div>
+  </div>
+</div>
+
+<!-- ADD SIGHTING MODAL -->
+
+<div id="add-modal" class="modal-overlay" style="display:none;">
+  <div class="modal-sheet" style="background:#0c1528;border-color:#f59e0b;max-width:700px;">
+    <div class="modal-handle"><div style="width:40px;height:4px;border-radius:2px;background:#334155;"></div></div>
+    <div style="padding:14px 18px;border-bottom:1px solid #1e293b;display:flex;align-items:center;justify-content:space-between;">
+      <div>
+        <div style="font-size:15px;font-weight:900;color:#f59e0b;letter-spacing:0.08em;">✈ ADD NEW SIGHTING</div>
+        <div style="font-size:11px;color:#475569;margin-top:2px;">Fields marked <span style="color:#f59e0b">*</span> are required</div>
+      </div>
+      <button onclick="closeAddModal()" style="background:none;border:1px solid #334155;color:#64748b;padding:6px 14px;font-size:14px;cursor:pointer;border-radius:4px;min-height:44px;">✕</button>
+    </div>
+    <div id="add-dup-banner" style="display:none;margin:12px 16px 0;padding:12px 14px;border-radius:6px;"></div>
+    <div id="add-msg" style="display:none;margin:8px 16px 0;padding:8px 12px;border-radius:4px;font-size:12px;"></div>
+    <div id="add-form-body" style="padding:16px;display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:14px;"></div>
+    <div class="modal-footer" style="border-top:1px solid #1e293b;">
+      <button onclick="closeAddModal()" class="mbtn mbtn-outline">Cancel</button>
+      <button onclick="submitAdd(false)" class="mbtn" style="border-color:#38bdf8;background:#38bdf822;color:#38bdf8;">Save + Add Another</button>
+      <button onclick="submitAdd(true)" class="mbtn" style="border-color:#f59e0b;background:#f59e0b22;color:#f59e0b;">✓ Save + Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- EDIT SIGHTING MODAL -->
+
+<div id="edit-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.85);z-index:100;overflow-y:auto;padding:20px 12px;">
+  <div id="edit-sheet" style="background:#0c1528;border:2px solid #f59e0b;max-width:700px;margin:0 auto;border-radius:8px;">
+    <div style="padding:14px 18px;border-bottom:1px solid #1e293b;display:flex;align-items:center;justify-content:space-between;">
+      <div>
+        <div id="edit-title" style="font-size:15px;font-weight:900;color:#f59e0b;letter-spacing:0.08em;">✎ EDIT RECORD</div>
+        <div style="font-size:11px;color:#475569;margin-top:2px;">All fields marked * are required</div>
+      </div>
+      <button onclick="closeEdit()" style="background:none;border:1px solid #334155;color:#64748b;padding:6px 14px;font-size:14px;cursor:pointer;border-radius:4px;min-height:44px;">✕</button>
+    </div>
+    <div id="edit-msg" style="display:none;margin:8px 16px 0;padding:8px 12px;border-radius:4px;font-size:12px;"></div>
+    <div style="padding:16px;display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:14px;" id="edit-fields"></div>
+    <div style="padding:12px 16px;border-top:1px solid #1e293b;display:flex;gap:10px;justify-content:flex-end;">
+      <button onclick="closeEdit()" style="padding:10px 18px;border:1px solid #334155;background:transparent;color:#64748b;cursor:pointer;font-size:12px;border-radius:4px;min-height:44px;">Cancel</button>
+      <button onclick="doEdit()" style="padding:10px 20px;border:1px solid #f59e0b;background:#f59e0b22;color:#f59e0b;cursor:pointer;font-size:12px;font-weight:800;border-radius:4px;min-height:44px;">✓ Save Changes</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ══════════════════════════════════════════════════
+// CONFIGURATION — fill in your Supabase details here
+// ══════════════════════════════════════════════════
+const SUPABASE_URL  = 'https://ielbsqnwftzlngnbkvbp.supabase.co';
+const SUPABASE_ANON = 'PASTE_YOUR_ANON_KEY_HERE';
+
+// Initialise Supabase client immediately — not in DOMContentLoaded
+// This ensures sb is ready before any user interaction
+let sb = (function() {
+  try {
+    return supabase.createClient(SUPABASE_URL, SUPABASE_ANON);
+  } catch(e) {
+    return null;
+  }
+})();
+
+// ══════════════════════════════════════════════════
+// CONSTANTS
+// ══════════════════════════════════════════════════
+const BATCH = 100;
+
+const SPOT_NAMES = {
+  EGVA:'RAF Fairford',EGUN:'RAF Mildenhall',EGUL:'RAF Lakenheath',
+  EGXW:'RAF Waddington',EGXJ:'RAF Finningley',EGXE:'RAF Leeming',
+  EGLL:'London Heathrow',EGNM:'Leeds Bradford',EGNV:'Teesside',
+  EGVN:'RAF Brize Norton',EGXI:'RAF Kinloss',EGXC:'RAF Leuchars',
+  EGXU:'RAF Linton-on-Ouse',EGSC:'Cambridge',EGSS:'London Stansted',
+  EGXT:'RAF Cottesmore',EGXG:'RAF Church Fenton',EGYD:'RAF Cranwell',
+  EGDL:'RAF Lyneham',EGDG:'RAF Shawbury',EGPK:'RAF Prestwick',
+  EGCC:'Manchester',EGCD:'Woodford',EGCN:'Doncaster Sheffield',
+  EGPF:'Glasgow',EGBB:'Birmingham',EGBV:'Cranfield',
+  'E307':'USAF E307','I/B EGUL':'Inbound RAF Lakenheath',
+};
+
+const OPS_FULL = {
+  ACC:'Air Combat Command',AMC:'Air Mobility Command',USAFE:'US Air Forces Europe',
+  ANG:'Air National Guard',AFRC:'Air Force Reserve Cmd',AFSOC:'AF Special Ops',
+  AFRES:'Air Force Reserve',AETC:'Air Education & Training',AFMC:'AF Materiel Cmd',
+  PACAF:'Pacific Air Forces',USN:'US Navy',USMC:'US Marine Corps',
+  USAr:'US Army',USAR:'US Army Reserve',USCG:'US Coast Guard',
+  RAF:'Royal Air Force',AAC:'Army Air Corps',RN:'Royal Navy',RM:'Royal Marines',
+  RAAF:'Royal Australian AF',GAF:'German Air Force',BAF:'Belgian Air Force',
+  FAF:'French Air Force',IAF:'Italian Air Force',RNAF:'Royal Netherlands AF',
+};
+
+const TYPE_COLORS = {
+  'A-10':'#4ade80','A-6':'#86efac','B-1':'#f87171','B-2':'#dc2626','B-52':'#ef4444',
+  'C-17':'#2563eb','C-130':'#34d399','C-135':'#10b981','C-141':'#047857',
+  'E-3':'#f472b6','E-4':'#ec4899','F-14':'#fb923c','F-15':'#f97316','F-16':'#ea580c',
+  'F-18':'#c2410c','F-22':'#9a3412','F-35':'#7c2d12','F-117':'#d4d4d4',
+  'H-47':'#7c3aed','H-60':'#4c1d95','H-64':'#3b0764','U-2':'#e2e8f0',
+  'Tornado':'#ff6b35','Typhoon':'#ff8c42','Harrier':'#ff4d6d','Jaguar':'#c77dff',
+  'Hawk':'#9d4edd','Nimrod':'#48cae4','SeaKing':'#0096c7','Lynx':'#0077b6',
+  'Merlin':'#023e8a','Sentry':'#e9c46a','VC-10':'#06d6a0','A400':'#1b9aaa',
+  'Mirage':'#6366f1','Rafale':'#4f46e5','F-4':'#c65d00','F-5':'#d97706',
+  'MiG-21':'#ef4444','MiG-29':'#dc2626','Gripen':'#22d3ee','Viggen':'#06b6d4',
+};
+
+const FIELD_META = [
+  {key:'registration', label:'Serial / Registration',  required:true,  hint:'e.g. ZE413 or 86-0263'},
+  {key:'country',      label:'Country',                required:true,  hint:'e.g. United States, United Kingdom, France'},
+  {key:'callsign',     label:'Callsign',               required:false, hint:'e.g. PANTHER 1'},
+  {key:'aircraft_type',label:'Aircraft Type (family)', required:true,  hint:'e.g. Tornado, F-16'},
+  {key:'type',         label:'Variant / Sub-type',     required:false, hint:'e.g. Tornado GR4'},
+  {key:'tail_code',    label:'Tail Code',              required:false, hint:'e.g. LN, SP'},
+  {key:'colour',       label:'Colour / Markings',      required:false, hint:'e.g. grey, bk/w'},
+  {key:'ops',          label:'Service / Command',      required:false, hint:'e.g. RAF, USAFE, GAF'},
+  {key:'detachment',   label:'Unit / Squadron',        required:false, hint:'e.g. 9-SQN, 492-FS'},
+  {key:'location',     label:'Home Base',              required:false, hint:'e.g. Lakenheath'},
+  {key:'spot',         label:'Airfield ICAO (Spotted)',required:true,  hint:'e.g. EGVA, EGUN', upper:true},
+  {key:'date',         label:'Date Spotted',           required:true,  hint:'YYYY-MM-DD', type:'date'},
+  {key:'name',         label:'Notes / Named Aircraft', required:false, hint:'e.g. Spirit of Missouri'},
+];
+
+// Pre-populated country list — always available even before records load
+const KNOWN_COUNTRIES = [
+  'United States','United Kingdom','Algeria','Australia','Austria','Belgium',
+  'Brazil','Bulgaria','Canada','Chile','Croatia','Czech Rep.','Denmark','Egypt',
+  'Finland','France','Germany','Greece','Hungary','India','Ireland','Israel',
+  'Italy','Japan','Jordan','Kuwait','Latvia','Lithuania','Malaysia','Malta',
+  'Morocco','NATO','Netherlands','New Zealand','Norway','Oman','Pakistan',
+  'Poland','Portugal','Qatar','Romania','Russia','Rep Singapore','Saudi Arabia',
+  'Slovakia','Slovenia','South Africa','Spain','Sweden','Switzerland',
+  'Turkey','UAE','Ukraine'
+];
+
+// ══════════════════════════════════════════════════
+// INIT
+// ══════════════════════════════════════════════════
+
+let profile    = null;
+let records    = [];
+let totalCount = 0;
+let cursor     = 0;
+let hasMore    = true;
+let isLoading  = false;
+let isLoadingMore = false;
+let selectedId = null;
+let editRecord = null;
+let adminTab   = 'pending';
+
+let knownTypes     = [];
+let knownSpots     = [];
+let knownOps       = [];
+let knownCountries = [];
+
+let searchTimer   = null;
+let dupTimer      = null;
+let dupBlocked    = false;
+
+// ── Filters state ──
+const filters = { service:'', country:'', type:'', spot:'', ops:'', search:'' };
+
+// ══════════════════════════════════════════════════
+// HELPERS
+// ══════════════════════════════════════════════════
+function show(id)  { document.getElementById(id).classList.add('active'); }
+function hide(id)  { document.getElementById(id).classList.remove('active'); }
+function showEl(el){ if(typeof el==='string') el=document.getElementById(el); el.style.display=''; }
+function hideEl(el){ if(typeof el==='string') el=document.getElementById(el); el.style.display='none'; }
+function el(id)    { return document.getElementById(id); }
+
+function typeBadge(type) {
+  if(!type) return '';
+  const c = TYPE_COLORS[type] || '#94a3b8';
+  return `<span class="type-badge" style="background:${c}1a;color:${c};border-color:${c}55">${esc(type)}</span>`;
+}
+function esc(s) {
+  return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+function svcColor(r) {
+  return r.service==='UK'?'#4ade80':r.service==='WORLD'?'#a78bfa':'#7dd3fc';
+}
+function rowClass(r) {
+  return r.service==='UK'?'uk-row':r.service==='WORLD'?'wld-row':'us-row';
+}
+function formatSpot(spot) {
+  if(!spot) return '';
+  const name = SPOT_NAMES[spot]||'';
+  return name ? `<span style="color:var(--amber);font-weight:800">${esc(spot)}</span><div class="spot-name">${esc(name)}</div>`
+              : `<span style="color:var(--amber);font-weight:800">${esc(spot)}</span>`;
+}
+function buildFiltersObj() {
+  return {
+    search:   filters.search.trim()||undefined,
+    aircraft_type: filters.type||undefined,
+    spot:     filters.spot||undefined,
+    ops:      filters.ops||undefined,
+    country:  filters.country||undefined,
+    service:  filters.service||undefined,
+  };
+}
+
+// ══════════════════════════════════════════════════
+// VIEWS
+// ══════════════════════════════════════════════════
+function showView(name) {
+  ['auth-view','pending-view','db-view','admin-view'].forEach(v => {
+    v === name+'-view' ? show(v) : hide(v);
+  });
+}
+
+// ══════════════════════════════════════════════════
+// AUTH
+// ══════════════════════════════════════════════════
+function authMsg(type, msg) {
+  hideEl('auth-error'); hideEl('auth-success');
+  if(!msg) return;
+  const id = type==='error'?'auth-error':'auth-success';
+  el(id).textContent = msg;
+  showEl(id);
+}
+
+async function loadProfile() {
+  const { data: { user } } = await sb.auth.getUser();
+  if(!user) return null;
+  const { data, error } = await sb.from('profiles').select('*').eq('id',user.id).single();
+  if(error) throw error;
+  return data;
+}
+
+async function handleLogin() {
+  authMsg('','');
+  const email = el('login-email').value.trim();
+  const pass  = el('login-pass').value;
+  if(!email||!pass) return authMsg('error','Please enter your email and password.');
+
+  el('login-btn').textContent = 'SIGNING IN…';
+
+  if(!sb || !sb.auth) {
+    authMsg('error', 'Not initialised — please refresh and try again.');
+    el('login-btn').textContent = 'SIGN IN';
+    return;
+  }
+
+  try {
+    const result = await sb.auth.signInWithPassword({email, password:pass});
+    if(result && result.error) {
+      authMsg('error', result.error.message || 'Login failed. Check your email and password.');
+      el('login-btn').textContent = 'SIGN IN';
+      return;
+    }
+    // onAuthStateChange will handle the rest
+  } catch(e) {
+    authMsg('error', 'Exception: ' + (e.message || String(e)));
+    el('login-btn').textContent = 'SIGN IN';
+  }
+}
+
+async function handleRegister() {
+  authMsg('','');
+  const name = el('reg-name').value.trim();
+  const email= el('reg-email').value.trim();
+  const pass = el('reg-pass').value;
+  const conf = el('reg-conf').value;
+  if(!name)            return authMsg('error','Please enter your full name.');
+  if(!email)           return authMsg('error','Please enter your email address.');
+  if(pass.length<8)    return authMsg('error','Password must be at least 8 characters.');
+  if(pass!==conf)      return authMsg('error','Passwords do not match.');
+  el('register-btn').textContent='REQUESTING…';
+  try {
+    await sb.auth.signUp({email, password:pass, options:{data:{full_name:name}}});
+    authMsg('success','Account created! Awaiting admin approval before you can sign in.');
+    el('register-form').style.display='none';
+    el('login-form').style.display='';
+  } catch(e) {
+    authMsg('error', e.message||'Registration failed.');
+  } finally {
+    el('register-btn').textContent='REQUEST ACCESS';
+  }
+}
+
+// ══════════════════════════════════════════════════
+// SUPABASE DATA
+// ══════════════════════════════════════════════════
+async function fetchBatch(page) {
+  const f = buildFiltersObj();
+  let q = sb.from('sightings')
+    .select('*',{count:'exact'})
+    .order('registration',{ascending:true})
+    .range(page*BATCH, (page+1)*BATCH-1);
+
+  if(f.search) {
+    q = q.or([
+      'registration','callsign','type','aircraft_type','detachment','ops','spot','country'
+    ].map(c=>`${c}.ilike.%${f.search}%`).join(','));
+  }
+  if(f.aircraft_type) q = q.eq('aircraft_type', f.aircraft_type);
+  if(f.spot)          q = q.eq('spot', f.spot);
+  if(f.ops)           q = q.eq('ops', f.ops);
+  if(f.country)       q = q.eq('country', f.country);
+  if(f.service !== undefined && f.service !== '') {
+    if(f.service==='US')        q = q.not('service','in','("UK","WORLD")');
+    else if(f.service==='UK')   q = q.eq('service','UK');
+    else if(f.service==='WORLD')q = q.eq('service','WORLD');
+  }
+  const { data, error, count } = await q;
+  if(error) throw error;
+  return { data: data||[], count: count||0 };
+}
+
+async function checkDuplicate(reg, country) {
+  const trimmed = reg.trim();
+  if(!trimmed) return [];
+  // Use SECURITY DEFINER RPC to bypass RLS — checks reg + country together
+  const { data, error } = await sb.rpc('check_registration_exists', {
+    reg: trimmed,
+    ctry: (country||'').trim()
+  });
+  if(error){ console.error('[DUP CHECK] ERROR:', error.message); return []; }
+  return data||[];
+}
+
+// ══════════════════════════════════════════════════
+// LOAD & RENDER
+// ══════════════════════════════════════════════════
+async function loadFirst() {
+  isLoading=true; cursor=0; records=[]; selectedId=null;
+  el('loading-msg').style.display='';
+  el('empty-msg').style.display='none';
+  el('table-body').innerHTML='';
+  el('card-list').innerHTML='';
+  el('all-loaded-msg').style.display='none';
+  el('load-more-indicator').style.display='none';
+  closeDetailPanel();
+  try {
+    const { data, count } = await fetchBatch(0);
+    totalCount = count;
+    records = data;
+    cursor = data.length;
+    hasMore = cursor < count;
+    el('total-count').textContent = count.toLocaleString();
+    updateCounter();
+    buildKnownLists(data);
+    renderRecords(data, false);
+  } catch(e) {
+    el('db-error').textContent = 'Error: '+e.message;
+    el('db-error').style.display='';
+  } finally {
+    isLoading=false;
+    el('loading-msg').style.display='none';
+    if(records.length===0) el('empty-msg').style.display='';
+    updateScrollEnd();
+  }
+}
+
+async function loadMore() {
+  if(isLoadingMore||!hasMore||isLoading) return;
+  isLoadingMore=true;
+  el('load-more-indicator').style.display='';
+  try {
+    const page = Math.floor(cursor/BATCH);
+    const { data } = await fetchBatch(page);
+    if(!data.length){ hasMore=false; updateScrollEnd(); return; }
+    records.push(...data);
+    cursor+=data.length;
+    hasMore = cursor < totalCount;
+    renderRecords(data, true);
+    updateCounter();
+    updateScrollEnd();
+  } catch(e) {
+    el('db-error').textContent='Error loading more: '+e.message;
+    el('db-error').style.display='';
+  } finally {
+    isLoadingMore=false;
+    el('load-more-indicator').style.display='none';
+  }
+}
+
+function updateCounter() {
+  el('loaded-count').textContent = records.length.toLocaleString();
+  el('total-label').textContent  = totalCount>0 ? ` / ${totalCount.toLocaleString()}` : '';
+}
+
+function updateScrollEnd() {
+  el('all-loaded-msg').style.display = (!hasMore && records.length>0) ? '' : 'none';
+  el('all-loaded-msg').textContent = `── ALL ${totalCount.toLocaleString()} RECORDS LOADED ──`;
+}
+
+function buildKnownLists(data) {
+  if(knownTypes.length) return; // only build once
+  knownTypes     = [...new Set(data.map(r=>r.aircraft_type).filter(Boolean))].sort();
+  knownSpots     = [...new Set(data.map(r=>r.spot).filter(Boolean))].sort();
+  knownOps       = [...new Set(data.map(r=>r.ops).filter(Boolean))].sort();
+  knownCountries = [...new Set(data.map(r=>r.country).filter(Boolean))].sort();
+  populateFilterOptions();
+  buildDatalistOptions();
+}
+
+function populateFilterOptions() {
+  const add = (selId, arr, fmtFn) => {
+    const sel = el(selId);
+    arr.forEach(v => {
+      const o = document.createElement('option');
+      o.value = v; o.textContent = fmtFn ? fmtFn(v) : v;
+      sel.appendChild(o);
+    });
+  };
+  add('f-country', knownCountries);
+  add('f-type',    knownTypes);
+  add('f-spot',    knownSpots, v => SPOT_NAMES[v] ? `${v} — ${SPOT_NAMES[v]}` : v);
+  add('f-ops',     knownOps);
+}
+
+function buildDatalistOptions() {
+  const lists = {
+    'dl-types':    knownTypes,
+    'dl-spots':    knownSpots.map(s => ({value:s, label: SPOT_NAMES[s]?`${s} — ${SPOT_NAMES[s]}`:s})),
+    'dl-ops':      knownOps.map(o => ({value:o, label: OPS_FULL[o]?`${o} — ${OPS_FULL[o]}`:o})),
+    'dl-countries':[...new Set([...KNOWN_COUNTRIES, ...knownCountries])].sort(),
+  };
+  Object.entries(lists).forEach(([id, items]) => {
+    let dl = document.getElementById(id);
+    if(!dl){ dl=document.createElement('datalist'); dl.id=id; document.body.appendChild(dl); }
+    dl.innerHTML='';
+    items.forEach(item => {
+      const o=document.createElement('option');
+      if(typeof item==='string'){ o.value=item; } else { o.value=item.value; o.label=item.label; }
+      dl.appendChild(o);
+    });
+  });
+}
+
+// ══════════════════════════════════════════════════
+// RENDER ROWS
+// ══════════════════════════════════════════════════
+function renderRecords(data, append) {
+  const tbody = el('table-body');
+  const cards = el('card-list');
+  if(!append){ tbody.innerHTML=''; cards.innerHTML=''; }
+
+  data.forEach(r => {
+    const rc = rowClass(r);
+    const sc = svcColor(r);
+    const tc = TYPE_COLORS[r.aircraft_type]||'#64748b';
+
+    // Desktop row
+    const tr = document.createElement('tr');
+    tr.className = rc;
+    tr.dataset.id = r.id;
+    tr.innerHTML = `
+      <td class="reg-cell">${esc(r.registration)}</td>
+      <td>${typeBadge(r.aircraft_type)}</td>
+      <td class="variant-cell">${esc(r.type||'')}</td>
+      <td class="${r.callsign&&r.callsign!=='?'?'call-cell':'call-cell dim'}">${r.callsign&&r.callsign!=='?'?esc(r.callsign):'—'}</td>
+      <td class="tc-cell">${esc(r.tail_code||'')}</td>
+      <td><span class="svc-code" style="color:${sc}">${esc(r.ops||'')}</span></td>
+      <td style="max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text3)" title="${esc(r.detachment||'')}">${esc(r.detachment||'')}</td>
+      <td class="country-cell" style="color:${sc}">${esc(r.country||'')}</td>
+      <td class="spot-cell">${formatSpot(r.spot)}</td>
+      <td class="date-cell">${esc(r.date||'')}</td>`;
+    tr.addEventListener('click',()=>selectRecord(r, tr));
+    tbody.appendChild(tr);
+
+    // Mobile card
+    const card = document.createElement('div');
+    card.className = `record-card ${rc}`;
+    card.dataset.id = r.id;
+    card.innerHTML = `
+      <div class="card-top">
+        <span class="card-reg">${esc(r.registration)}</span>
+        ${typeBadge(r.aircraft_type)}
+        <span class="card-spot">${esc(r.spot||'')}</span>
+      </div>
+      <div class="card-bot">
+        <span class="card-type-text">${esc(r.type||'')}</span>
+        <span style="color:${sc};font-size:11px;font-weight:700">${esc(r.ops||'')}</span>
+        ${r.country?`<span style="color:${sc};font-size:11px">${esc(r.country)}</span>`:''}
+        <span class="card-date">${esc(r.date||'')}</span>
+      </div>
+      <div class="card-detail" id="cd-${esc(r.id)}">
+        <div class="detail-grid">
+          ${[
+            ['CALLSIGN',  r.callsign&&r.callsign!=='?'?r.callsign:'—','#cbd5e1'],
+            ['TAIL CODE', r.tail_code||'—','#64748b'],
+            ['UNIT/SQN',  r.detachment||'—','#94a3b8'],
+            ['HOME BASE', r.location||'—','#94a3b8'],
+            ['SERVICE',   (r.ops||'')+(OPS_FULL[r.ops]?' — '+OPS_FULL[r.ops]:''),sc],
+            ['SPOTTED AT',r.spot?(r.spot+(SPOT_NAMES[r.spot]?' — '+SPOT_NAMES[r.spot]:'')):' — ','#fbbf24'],
+          ].map(([l,v,c])=>`
+            <div class="detail-item" style="border-color:${tc}33">
+              <div class="detail-label">${l}</div>
+              <div class="detail-val" style="color:${c}">${esc(v)}</div>
+            </div>`).join('')}
+        </div>
+        ${profile&&(profile.role==='editor'||profile.role==='admin')?
+          `<button class="edit-btn" style="border:1px solid ${tc};background:${tc}22;color:${tc}"
+            onclick="event.stopPropagation();openEditModal(records.find(x=>x.id==='${esc(r.id)}'))">Edit Record</button>`:''}
+      </div>`;
+    card.addEventListener('click',()=>selectCard(r, card));
+    cards.appendChild(card);
+  });
+}
+
+// ══════════════════════════════════════════════════
+// SELECTION
+// ══════════════════════════════════════════════════
+function selectRecord(r, tr) {
+  if(selectedId===r.id){ deselectAll(); return; }
+  deselectAll();
+  selectedId=r.id;
+  tr.classList.add('sel-row');
+  showDetailPanel(r);
+}
+
+function selectCard(r, card) {
+  if(selectedId===r.id){
+    deselectAll(); return;
+  }
+  deselectAll();
+  selectedId=r.id;
+  card.classList.add('sel-row');
+  card.style.borderLeftColor=TYPE_COLORS[r.aircraft_type]||'#64748b';
+  const det=document.getElementById('cd-'+r.id);
+  if(det) det.classList.add('open');
+}
+
+function deselectAll() {
+  selectedId=null;
+  document.querySelectorAll('.sel-row').forEach(e=>{
+    e.classList.remove('sel-row');
+    e.style.borderLeftColor='';
+  });
+  document.querySelectorAll('.card-detail.open').forEach(e=>e.classList.remove('open'));
+  closeDetailPanel();
+}
+
+// ══════════════════════════════════════════════════
+// DETAIL PANEL (desktop)
+// ══════════════════════════════════════════════════
+function showDetailPanel(r) {
+  const panel = el('detail-panel');
+  const tc = TYPE_COLORS[r.aircraft_type]||'#64748b';
+  const sc = svcColor(r);
+  const isUK    = r.service==='UK';
+  const isWorld = r.service==='WORLD';
+
+  panel.style.borderTopColor = tc;
+
+  const canEdit = profile&&(profile.role==='editor'||profile.role==='admin');
+
+  el('detail-top').innerHTML = `
+    <span style="color:${tc};font-weight:900;font-size:15px;font-family:var(--font-mono)">${esc(r.registration)}</span>
+    ${typeBadge(r.aircraft_type)}
+    <span style="color:var(--text2);font-size:11px">${esc(r.type||'')}</span>
+    ${isUK?`<span class="flag-badge" style="color:var(--green);border-color:#4ade8044">🇬🇧 UK</span>`:''}
+    ${isWorld?`<span class="flag-badge" style="color:var(--purple);border-color:#a78bfa44">🌍 ${esc(r.country||'')}</span>`:''}
+    ${!isUK&&!isWorld?`<span class="flag-badge" style="color:var(--blue);border-color:#7dd3fc44">🇺🇸 US</span>`:''}
+    ${r.name?`<span style="color:var(--amber);font-size:11px;font-style:italic">"${esc(r.name)}"</span>`:''}
+    ${canEdit?`<button onclick="openEditModal(records.find(x=>x.id==='${esc(r.id)}'))"
+      style="margin-left:auto;padding:5px 16px;border:1px solid ${tc};background:${tc}22;color:${tc};
+        cursor:pointer;font-size:11px;font-weight:800;font-family:var(--font-mono);border-radius:4px">Edit</button>`:''}`;
+
+  el('detail-grid').innerHTML = [
+    ['SERIAL/REG',   r.registration,                                           '#f1f5f9'],
+    ['CALLSIGN',     r.callsign&&r.callsign!=='?'?r.callsign:'—',             '#cbd5e1'],
+    ['VARIANT',      r.type||'—',                                              '#94a3b8'],
+    ['TAIL CODE',    r.tail_code||'—',                                         '#64748b'],
+    ['COLOUR/MARKS', r.colour||'—',                                            '#64748b'],
+    ['SERVICE/OPS',  (r.ops||'')+(OPS_FULL[r.ops]?' — '+OPS_FULL[r.ops]:''), sc],
+    ['UNIT/SQN',     r.detachment||'—',                                        '#94a3b8'],
+    ['COUNTRY',      r.country||'—',                                           sc],
+    ['SPOTTED AT',   r.spot?(r.spot+(SPOT_NAMES[r.spot]?' — '+SPOT_NAMES[r.spot]:'')):' — ','#fbbf24'],
+    ['DATE',         r.date||'—',                                              '#64748b'],
+  ].map(([l,v,c])=>`
+    <div class="dpanel-item" style="border-color:${tc}33">
+      <div class="dpanel-label">${l}</div>
+      <div class="dpanel-val" style="color:${c}">${esc(v)}</div>
+    </div>`).join('');
+
+  panel.classList.add('open');
+}
+
+function closeDetailPanel() {
+  el('detail-panel').classList.remove('open');
+  el('detail-top').innerHTML='';
+  el('detail-grid').innerHTML='';
+}
+
+// ══════════════════════════════════════════════════
+// FORM BUILDER
+// ══════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════════
+// ADD & EDIT MODALS — clean rewrite
+// ═══════════════════════════════════════════════════════════════════
+
+// All fields for add/edit forms
+
+let currentEditRecord = null;
+
+const ADD_FIELDS = [
+  {id:'registration', label:'Serial / Registration', required:true,  hint:'e.g. ZE413 or 86-0263'},
+  {id:'country',      label:'Country',               required:true,  hint:'e.g. United Kingdom, United States, France', list:'dl-countries'},
+  {id:'callsign',     label:'Callsign',              required:false, hint:'e.g. PANTHER 1'},
+  {id:'aircraft_type',label:'Aircraft Type',         required:true,  hint:'e.g. Tornado, F-16, H-47', list:'dl-types'},
+  {id:'type',         label:'Variant / Sub-type',    required:false, hint:'e.g. Tornado GR4, F-16C'},
+  {id:'tail_code',    label:'Tail Code',             required:false, hint:'e.g. LN, SP, EB'},
+  {id:'colour',       label:'Colour / Markings',     required:false, hint:'e.g. grey, bk/w, Tiger'},
+  {id:'ops',          label:'Service / Command',     required:false, hint:'e.g. RAF, USAFE, GAF', list:'dl-ops'},
+  {id:'detachment',   label:'Unit / Squadron',       required:false, hint:'e.g. 9-SQN, 492-FS'},
+  {id:'location',     label:'Home Base',             required:false, hint:'e.g. Lakenheath, Marham'},
+  {id:'spot',         label:'Airfield ICAO (Spotted)',required:true,  hint:'e.g. EGVA, EGUN, EGXW', list:'dl-spots', upper:true},
+  {id:'date',         label:'Date Spotted',          required:true,  hint:'YYYY-MM-DD', isDate:true},
+  {id:'name',         label:'Notes / Named Aircraft',required:false, hint:'e.g. Spirit of Missouri'},
+];
+
+function makeField(f, prefix, val) {
+  const wrap = document.createElement('div');
+  wrap.style.cssText = 'display:flex;flex-direction:column;gap:5px;';
+  const lbl = document.createElement('label');
+  lbl.setAttribute('for', prefix + f.id);
+  lbl.style.cssText = 'font-size:11px;color:#475569;font-weight:800;letter-spacing:0.08em;';
+  lbl.textContent = f.label;
+  if(f.required) {
+    const star = document.createElement('span');
+    star.textContent = ' *'; star.style.color = '#f59e0b';
+    lbl.appendChild(star);
+  }
+  const inp = document.createElement('input');
+  inp.id = prefix + f.id; inp.name = f.id;
+  inp.type = f.isDate ? 'date' : 'text';
+  inp.value = val || ''; inp.placeholder = f.hint || '';
+  inp.style.cssText = 'width:100%;padding:10px 12px;background:#0a0f1e;border:1px solid #1e293b;color:#e2e8f0;font-size:14px;font-family:inherit;border-radius:4px;outline:none;box-sizing:border-box;';
+  if(f.list) inp.setAttribute('list', f.list);
+  inp.addEventListener('focus', () => { inp.style.borderColor='#f59e0b'; });
+  inp.addEventListener('blur',  () => { inp.style.borderColor='#1e293b'; });
+  if(f.upper) inp.addEventListener('input', () => { inp.value=inp.value.toUpperCase(); });
+  const hint = document.createElement('div');
+  hint.style.cssText = 'font-size:10px;color:#334155;';
+  hint.textContent = f.hint || '';
+  wrap.appendChild(lbl); wrap.appendChild(inp); wrap.appendChild(hint);
+  return wrap;
+}
+
+function getVal(prefix, id) {
+  return (document.getElementById(prefix + id)?.value || '').trim();
+}
+
+function collectForm(prefix) {
+  const d = {};
+  ADD_FIELDS.forEach(f => { d[f.id] = getVal(prefix, f.id); });
+  return d;
+}
+
+function validateAdd(prefix) {
+  let ok = true;
+  ADD_FIELDS.forEach(f => {
+    const inp = document.getElementById(prefix + f.id);
+    if(!inp) return;
+    if(f.required && !inp.value.trim()) { inp.style.borderColor='#ef4444'; ok=false; }
+    if(f.id==='date' && inp.value && !/^\d{4}-\d{2}-\d{2}$/.test(inp.value.trim())) { inp.style.borderColor='#ef4444'; ok=false; }
+  });
+  return ok;
+}
+
+
+
+// ══════════════════════════════════════════════════
+// ADD MODAL
+// ══════════════════════════════════════════════════
+
+var ADD_FORM_FIELDS = [
+  {id:'registration',  label:'Serial / Registration', required:true,  hint:'e.g. ZE413, 86-0263, E-005'},
+  {id:'country',       label:'Country',               required:true,  hint:'e.g. United Kingdom, United States, France', list:'dl-countries'},
+  {id:'aircraft_type', label:'Aircraft Type',         required:true,  hint:'e.g. Tornado, F-16, H-47',                  list:'dl-types'},
+  {id:'type',          label:'Variant / Sub-type',    required:false, hint:'e.g. Tornado GR4, F-16C Block 50'},
+  {id:'callsign',      label:'Callsign',              required:false, hint:'e.g. PANTHER 1, AUSSIE 13'},
+  {id:'tail_code',     label:'Tail Code',             required:false, hint:'e.g. LN, SP, EB'},
+  {id:'colour',        label:'Colour / Markings',     required:false, hint:'e.g. grey, bk/w, Tiger scheme'},
+  {id:'ops',           label:'Service / Command',     required:false, hint:'e.g. RAF, USAFE, GAF, RAAF',                list:'dl-ops'},
+  {id:'detachment',    label:'Unit / Squadron',       required:false, hint:'e.g. 9-SQN, 492-FS'},
+  {id:'location',      label:'Home Base',             required:false, hint:'e.g. Lakenheath, Marham'},
+  {id:'spot',          label:'Airfield ICAO (Spotted)',required:true,  hint:'e.g. EGVA, EGUN, EGXW',                   list:'dl-spots', upper:true},
+  {id:'date',          label:'Date Spotted',          required:true,  hint:'YYYY-MM-DD',                               isDate:true},
+  {id:'name',          label:'Notes / Named Aircraft',required:false, hint:'e.g. Spirit of Missouri'},
+  {id:'service',       label:'Service Flag',          required:false, hint:'Leave blank for US, enter UK or WORLD'},
+];
+
+var addDupTimer = null;
+
+function makeAddField(f) {
+  var wrap = document.createElement('div');
+
+  var lbl = document.createElement('label');
+  lbl.setAttribute('for', 'add_' + f.id);
+  lbl.style.cssText = 'display:block;font-size:11px;color:#475569;font-weight:800;letter-spacing:0.08em;margin-bottom:5px;';
+  lbl.textContent = f.label;
+  if (f.required) {
+    var star = document.createElement('span');
+    star.textContent = ' *';
+    star.style.color = '#f59e0b';
+    lbl.appendChild(star);
+  }
+
+  var inp = document.createElement('input');
+  inp.id = 'add_' + f.id;
+  inp.type = f.isDate ? 'date' : 'text';
+  inp.placeholder = f.hint || '';
+  inp.style.cssText = 'width:100%;padding:10px 12px;background:#0a0f1e;border:1px solid #1e293b;color:#e2e8f0;font-size:14px;font-family:inherit;border-radius:4px;outline:none;box-sizing:border-box;';
+  if (f.list) inp.setAttribute('list', f.list);
+
+  inp.addEventListener('focus', function() { inp.style.borderColor = '#f59e0b'; });
+  inp.addEventListener('blur',  function() { inp.style.borderColor = '#1e293b'; });
+
+  if (f.upper) {
+    inp.addEventListener('input', function() { inp.value = inp.value.toUpperCase(); });
+  }
+
+  // Trigger dup check when registration or country changes
+  if (f.id === 'registration' || f.id === 'country') {
+    inp.addEventListener('input', function() { scheduleAddDupCheck(); });
+  }
+
+  var hint = document.createElement('div');
+  hint.style.cssText = 'font-size:10px;color:#334155;margin-top:4px;';
+  hint.textContent = f.hint || '';
+
+  wrap.appendChild(lbl);
+  wrap.appendChild(inp);
+  wrap.appendChild(hint);
+  return wrap;
+}
+
+function getAddVal(id) {
+  var el = document.getElementById('add_' + id);
+  return el ? el.value.trim() : '';
+}
+
+function openAddModal() {
+  // Build form
+  var grid = document.getElementById('add-form-body');
+  grid.innerHTML = '';
+  ADD_FORM_FIELDS.forEach(function(f) {
+    grid.appendChild(makeAddField(f));
+  });
+
+  // Reset state
+  document.getElementById('add-dup-banner').style.display = 'none';
+  document.getElementById('add-dup-banner').innerHTML = '';
+  document.getElementById('add-msg').style.display = 'none';
+  document.getElementById('add-modal').classList.add('open');
+  document.getElementById('add-modal').style.display = 'flex';
+}
+
+function closeAddModal() {
+  document.getElementById('add-modal').classList.remove('open');
+  document.getElementById('add-modal').style.display = 'none';
+  clearTimeout(addDupTimer);
+}
+
+function scheduleAddDupCheck() {
+  clearTimeout(addDupTimer);
+  var reg = getAddVal('registration');
+  var cty = getAddVal('country');
+  if (!reg) { hideAddDupBanner(); return; }
+  showAddDupBanner('checking');
+  addDupTimer = setTimeout(function() {
+    runAddDupCheck(reg, cty);
+  }, 600);
+}
+
+function runAddDupCheck(reg, cty) {
+  sb.rpc('check_registration_exists', { reg: reg, ctry: cty || '' })
+    .then(function(r) {
+      if (r.error || !r.data || r.data.length === 0) {
+        showAddDupBanner(r.data && r.data.length === 0 ? 'clear' : 'idle');
+      } else {
+        showAddDupBanner('found', r.data);
+      }
+    })
+    .catch(function() { hideAddDupBanner(); });
+}
+
+function hideAddDupBanner() {
+  var b = document.getElementById('add-dup-banner');
+  b.style.display = 'none';
+  b.innerHTML = '';
+}
+
+function showAddDupBanner(status, matches) {
+  var b = document.getElementById('add-dup-banner');
+  if (status === 'checking') {
+    b.style.cssText = 'display:block;margin:12px 16px 0;padding:10px 14px;border-radius:6px;background:#0f172a;border:1px solid #334155;font-size:12px;color:#475569;';
+    b.innerHTML = '⟳ Checking for duplicates…';
+  } else if (status === 'clear') {
+    b.style.cssText = 'display:block;margin:12px 16px 0;padding:10px 14px;border-radius:6px;background:#0a2a0a;border:1px solid #4ade8066;font-size:12px;color:#4ade80;font-weight:700;';
+    b.innerHTML = '✓ Registration not found for this country — safe to save.';
+  } else if (status === 'found') {
+    b.style.cssText = 'display:block;margin:12px 16px 0;padding:12px 14px;border-radius:6px;background:#2a0a0a;border:2px solid #ef4444;';
+    var html = '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;"><span style="font-size:16px">⚠</span><span style="font-size:13px;color:#ef4444;font-weight:900;letter-spacing:0.06em;">DUPLICATE FOUND</span></div>';
+    html += '<p style="font-size:12px;color:#fca5a5;margin-bottom:8px;">This registration already exists for this country in the database.</p>';
+    (matches || []).forEach(function(m) {
+      var c = TYPE_COLORS[m.aircraft_type] || '#94a3b8';
+      html += '<div style="background:#1a0505;border:1px solid #ef444433;border-radius:4px;padding:7px 10px;margin-bottom:4px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">';
+      html += '<span style="color:#f1f5f9;font-weight:900;font-family:monospace">' + esc(m.registration) + '</span>';
+      html += '<span style="background:' + c + '22;color:' + c + ';border:1px solid ' + c + '55;padding:1px 6px;font-size:10px;font-weight:800;border-radius:3px">' + esc(m.aircraft_type || '') + '</span>';
+      if (m.country) html += '<span style="color:#a78bfa;font-size:11px;font-weight:700">' + esc(m.country) + '</span>';
+      if (m.spot) html += '<span style="color:#fbbf24;font-size:11px;font-weight:700">' + esc(m.spot) + '</span>';
+      if (m.date) html += '<span style="color:#475569;font-size:11px;margin-left:auto;font-family:monospace">' + esc(String(m.date)) + '</span>';
+      html += '</div>';
+    });
+    b.innerHTML = html;
+  } else {
+    hideAddDupBanner();
+    return;
+  }
+  b.style.display = 'block';
+}
+
+function isDuplicate() {
+  var b = document.getElementById('add-dup-banner');
+  return b.style.display !== 'none' && b.innerHTML.indexOf('DUPLICATE FOUND') >= 0;
+}
+
+async function submitAdd(andClose) {
+  // Validate required fields
+  var ok = true;
+  ADD_FORM_FIELDS.forEach(function(f) {
+    var inp = document.getElementById('add_' + f.id);
+    if (!inp) return;
+    inp.style.borderColor = '#1e293b';
+    if (f.required && !inp.value.trim()) {
+      inp.style.borderColor = '#ef4444';
+      ok = false;
+    }
+    if (f.id === 'date' && inp.value && !/^\d{4}-\d{2}-\d{2}$/.test(inp.value.trim())) {
+      inp.style.borderColor = '#ef4444';
+      ok = false;
+    }
+  });
+  if (!ok) return;
+
+  var msg = document.getElementById('add-msg');
+  msg.style.display = 'none';
+
+  // Always run fresh duplicate check at save time
+  var reg = getAddVal('registration');
+  var cty = getAddVal('country');
+  msg.textContent = 'Checking for duplicates…';
+  msg.style.cssText = 'display:block;margin:8px 16px 0;padding:8px 12px;border-radius:4px;font-size:12px;color:#475569;background:#0f172a;border:1px solid #334155;';
+
+  try {
+    var dupResult = await sb.rpc('check_registration_exists', { reg: reg, ctry: cty });
+    if (!dupResult.error && dupResult.data && dupResult.data.length > 0) {
+      showAddDupBanner('found', dupResult.data);
+      msg.style.display = 'none';
+      return;
+    }
+    hideAddDupBanner();
+  } catch(e) {
+    // If dup check fails, proceed anyway
+    hideAddDupBanner();
+  }
+
+  // Collect all field values
+  var data = {};
+  ADD_FORM_FIELDS.forEach(function(f) {
+    data[f.id] = getAddVal(f.id);
+  });
+  if (profile && profile.id) data.created_by = profile.id;
+
+  msg.textContent = 'Saving…';
+
+  try {
+    var result = await sb.from('sightings').insert(data).select().single();
+    if (result.error) throw new Error(result.error.message);
+
+    var saved = result.data;
+    records.unshift(saved);
+    totalCount++;
+    document.getElementById('total-count').textContent = totalCount.toLocaleString();
+    updateCounter();
+
+    // Prepend to table
+    var tmp = document.createElement('table');
+    tmp.innerHTML = '<tbody>' + renderOneRow(saved) + '</tbody>';
+    var newTr = tmp.querySelector('tbody tr');
+    if (newTr) document.getElementById('table-body').prepend(newTr);
+
+    // Prepend to cards
+    var cdiv = document.createElement('div');
+    cdiv.innerHTML = renderOneCard(saved);
+    if (cdiv.firstChild) document.getElementById('card-list').prepend(cdiv.firstChild);
+
+    if (andClose) {
+      closeAddModal();
+      return;
+    }
+
+    msg.textContent = '✓ Saved! Fill in the next record.';
+    msg.style.color = '#4ade80';
+
+    // Clear form for next entry
+    setTimeout(function() {
+      ADD_FORM_FIELDS.forEach(function(f) {
+        var inp = document.getElementById('add_' + f.id);
+        if (inp) { inp.value = ''; inp.style.borderColor = '#1e293b'; }
+      });
+      hideAddDupBanner();
+      msg.style.display = 'none';
+    }, 1500);
+
+  } catch(e) {
+    msg.textContent = 'Error: ' + e.message;
+    msg.style.color = '#ef4444';
+  }
+}
+
+
+function openEditModal(r) {
+  if(!r) return;
+  currentEditRecord = r;
+  const tc = TYPE_COLORS[r.aircraft_type] || '#f59e0b';
+  document.getElementById('edit-title').textContent = '✎ EDIT — ' + r.registration;
+  document.getElementById('edit-title').style.color = tc;
+  document.getElementById('edit-sheet').style.borderColor = tc;
+
+  const grid = document.getElementById('edit-fields');
+  grid.innerHTML = '';
+  ADD_FIELDS.forEach(f => grid.appendChild(makeField(f, 'ef_', r[f.id] || '')));
+
+  document.getElementById('edit-msg').style.display = 'none';
+  document.getElementById('edit-modal').style.display = 'block';
+}
+
+function closeEdit() {
+  document.getElementById('edit-modal').style.display = 'none';
+  currentEditRecord = null;
+}
+
+// Keep old name working (called from rendered HTML)
+function closeEditModal() { closeEdit(); }
+
+async function doEdit() {
+  if(!currentEditRecord) return;
+  if(!validateAdd('ef_')) return;
+
+  const data = collectForm('ef_');
+  const msg = document.getElementById('edit-msg');
+  msg.textContent = 'Saving…';
+  msg.style.cssText = 'display:block;margin:8px 16px 0;padding:8px 12px;border-radius:4px;font-size:12px;color:#475569;background:#0f172a;border:1px solid #334155;';
+
+  try {
+    const { id, created_at, created_by, ...rest } = currentEditRecord;
+    const { data: updated, error } = await sb.from('sightings')
+      .update({ ...data, updated_by: profile?.id })
+      .eq('id', currentEditRecord.id)
+      .select().single();
+    if(error) throw error;
+
+    // Update local array
+    const idx = records.findIndex(x => x.id === currentEditRecord.id);
+    if(idx >= 0) records[idx] = updated;
+
+    // Update table row
+    const tr = document.querySelector(`#table-body tr[data-id="${currentEditRecord.id}"]`);
+    if(tr) {
+      const tmp = document.createElement('table');
+      tmp.innerHTML = '<tbody>' + renderOneRow(updated) + '</tbody>';
+      tr.replaceWith(tmp.querySelector('tbody tr'));
+    }
+    // Update card
+    const cd = document.querySelector(`#card-list [data-id="${currentEditRecord.id}"]`);
+    if(cd) {
+      const tmp = document.createElement('div');
+      tmp.innerHTML = renderOneCard(updated);
+      cd.replaceWith(tmp.firstChild);
+    }
+    // Refresh detail panel if open
+    if(selectedId === currentEditRecord.id) showDetailPanel(updated);
+
+    closeEdit();
+  } catch(e) {
+    msg.textContent = 'Error: ' + e.message;
+    msg.style.color = '#ef4444';
+  }
+}
+
+function renderOneRow(r){
+  const sc=svcColor(r);
+  return `<tr class="${rowClass(r)}" data-id="${esc(r.id)}" onclick="selectRecord(records.find(x=>x.id==='${esc(r.id)}'),this)">
+    <td class="reg-cell">${esc(r.registration)}</td>
+    <td>${typeBadge(r.aircraft_type)}</td>
+    <td class="variant-cell">${esc(r.type||'')}</td>
+    <td class="${r.callsign&&r.callsign!=='?'?'call-cell':'call-cell dim'}">${r.callsign&&r.callsign!=='?'?esc(r.callsign):'—'}</td>
+    <td class="tc-cell">${esc(r.tail_code||'')}</td>
+    <td><span class="svc-code" style="color:${sc}">${esc(r.ops||'')}</span></td>
+    <td style="max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text3)">${esc(r.detachment||'')}</td>
+    <td class="country-cell" style="color:${sc}">${esc(r.country||'')}</td>
+    <td class="spot-cell">${formatSpot(r.spot)}</td>
+    <td class="date-cell">${esc(r.date||'')}</td>
+  </tr>`;
+}
+
+function renderOneCard(r){
+  const sc=svcColor(r),tc=TYPE_COLORS[r.aircraft_type]||'#64748b';
+  const canEdit=profile&&(profile.role==='editor'||profile.role==='admin');
+  return `<div class="record-card ${rowClass(r)}" data-id="${esc(r.id)}" onclick="selectCard(records.find(x=>x.id==='${esc(r.id)}'),this)">
+    <div class="card-top"><span class="card-reg">${esc(r.registration)}</span>${typeBadge(r.aircraft_type)}<span class="card-spot">${esc(r.spot||'')}</span></div>
+    <div class="card-bot"><span class="card-type-text">${esc(r.type||'')}</span><span style="color:${sc};font-size:11px;font-weight:700">${esc(r.ops||'')}</span>${r.country?`<span style="color:${sc};font-size:11px">${esc(r.country)}</span>`:''}<span class="card-date">${esc(r.date||'')}</span></div>
+    <div class="card-detail" id="cd-${esc(r.id)}">
+      <div class="detail-grid">
+        ${[['CALLSIGN',r.callsign&&r.callsign!=='?'?r.callsign:'—','#cbd5e1'],['TAIL CODE',r.tail_code||'—','#64748b'],['UNIT/SQN',r.detachment||'—','#94a3b8'],['HOME BASE',r.location||'—','#94a3b8'],['SERVICE',(r.ops||'')+(OPS_FULL[r.ops]?' — '+OPS_FULL[r.ops]:''),sc],['SPOTTED AT',r.spot?(r.spot+(SPOT_NAMES[r.spot]?' — '+SPOT_NAMES[r.spot]:'')):' — ','#fbbf24']]
+          .map(([l,v,c])=>`<div class="detail-item" style="border-color:${tc}33"><div class="detail-label">${l}</div><div class="detail-val" style="color:${c}">${esc(v)}</div></div>`).join('')}
+      </div>
+      ${canEdit?`<button class="edit-btn" style="border:1px solid ${tc};background:${tc}22;color:${tc}" onclick="event.stopPropagation();openEditModal(records.find(x=>x.id==='${esc(r.id)}'))">Edit Record</button>`:''}
+    </div>
+  </div>`;
+}
+
+// ══════════════════════════════════════════════════
+// FILTERS
+// ══════════════════════════════════════════════════
+let filtersOpen=false;
+
+function toggleFilters() {
+  filtersOpen=!filtersOpen;
+  el('filter-grid').classList.toggle('open', filtersOpen);
+  updateFilterBtn();
+}
+
+function countActiveFilters() {
+  return [filters.service,filters.country,filters.type,filters.spot,filters.ops]
+    .filter(v=>v).length;
+}
+
+function updateFilterBtn() {
+  const n=countActiveFilters();
+  const btn=el('filter-toggle-btn');
+  btn.textContent=`Filters${n?` (${n})`:''}`;
+  btn.style.borderColor=n?'var(--amber)':'var(--border2)';
+  btn.style.background=n?'#f59e0b22':'transparent';
+  btn.style.color=n?'var(--amber)':'var(--text3)';
+  el('clear-filters-btn').style.display=n?'':'none';
+}
+
+function applyFilter(key, val) {
+  filters[key]=val;
+  updateFilterBtn();
+  resetAndLoad();
+}
+
+function clearAllFilters() {
+  filters.service=filters.country=filters.type=filters.spot=filters.ops='';
+  el('f-service').value=''; el('f-country').value='';
+  el('f-type').value=''; el('f-spot').value=''; el('f-ops').value='';
+  updateFilterBtn();
+  resetAndLoad();
+}
+
+function resetAndLoad() {
+  deselectAll();
+  knownTypes=[];knownSpots=[];knownOps=[];knownCountries=[]; // rebuild on next load
+  loadFirst();
+}
+
+// ══════════════════════════════════════════════════
+// INFINITE SCROLL
+// ══════════════════════════════════════════════════
+function initIntersectionObserver() {
+  const sentinel=el('scroll-sentinel');
+  const container=el('records-container');
+  const observer=new IntersectionObserver(entries=>{
+    if(entries[0].isIntersecting) loadMore();
+  },{root:container, rootMargin:'300px'});
+  observer.observe(sentinel);
+}
+
+// ══════════════════════════════════════════════════
+// ADMIN
+// ══════════════════════════════════════════════════
+async function loadAdmin() {
+  showView('admin');
+  el('admin-msg').style.display='none';
+  await renderUserList();
+}
+
+async function renderUserList() {
+  const { data, error } = await sb.from('profiles').select('*').order('created_at');
+  if(error){ el('admin-msg').textContent='Error: '+error.message; el('admin-msg').style.display=''; return; }
+  const users=data||[];
+  const pending=users.filter(u=>u.role==='pending');
+  const active =users.filter(u=>u.role!=='pending');
+  const list=adminTab==='pending'?pending:active;
+
+  el('tab-pending').textContent=`PENDING${pending.length?` (${pending.length})`:''}`;
+  el('users-list').innerHTML = list.length===0
+    ? `<div class="empty-msg">${adminTab==='pending'?'No pending requests.':'No active users.'}</div>`
+    : list.map(u=>{
+        const roleColor=u.role==='admin'?'#a78bfa':u.role==='editor'?'#f59e0b':u.role==='viewer'?'#4ade80':'#ef4444';
+        const date=new Date(u.created_at).toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'});
+        return `<div class="user-card">
+          <div style="flex:1">
+            <div class="user-name">${esc(u.full_name||'(no name)')}</div>
+            <div class="user-email">${esc(u.email)}</div>
+            <div class="user-meta">Registered: ${date}</div>
+          </div>
+          <div class="user-actions">
+            <span class="type-badge" style="background:${roleColor}22;color:${roleColor};border-color:${roleColor}55">${u.role.toUpperCase()}</span>
+            ${u.id!==profile?.id?`
+              <select class="role-select" id="role-${esc(u.id)}" onchange="changeRole('${esc(u.id)}',this.value)">
+                <option ${u.role==='viewer'?'selected':''}>viewer</option>
+                <option ${u.role==='editor'?'selected':''}>editor</option>
+                <option ${u.role==='admin'?'selected':''}>admin</option>
+                <option ${u.role==='pending'?'selected':''}>pending</option>
+              </select>
+              ${u.role==='pending'?`<button class="approve-btn" onclick="approveUser('${esc(u.id)}')">Approve</button>`:''}`
+            :'<span style="font-size:10px;color:var(--text4)">(you)</span>'}
+          </div>
+        </div>`;
+      }).join('');
+}
+
+async function approveUser(id) {
+  const sel=el('role-'+id);
+  const role=sel?sel.value:'viewer';
+  try{
+    await sb.rpc('approve_user',{target_id:id,new_role:role});
+    showAdminMsg('User approved as '+role+'.','success');
+    await renderUserList();
+  }catch(e){ showAdminMsg('Error: '+e.message,'error'); }
+}
+
+async function changeRole(id, role) {
+  try{
+    await sb.rpc('approve_user',{target_id:id,new_role:role});
+    showAdminMsg('Role updated.','success');
+    await renderUserList();
+  }catch(e){ showAdminMsg('Error: '+e.message,'error'); }
+}
+
+function showAdminMsg(msg, type) {
+  const m=el('admin-msg');
+  m.textContent=msg;
+  m.style.background=type==='success'?'#0a2a0a':'#2a0a0a';
+  m.style.color=type==='success'?'var(--green)':'var(--red)';
+  m.style.border=`1px solid ${type==='success'?'#4ade8066':'#ef444466'}`;
+  m.style.borderRadius='4px';
+  m.style.display='';
+  setTimeout(()=>m.style.display='none', 3000);
+}
+
+// ══════════════════════════════════════════════════
+// EVENT WIRING
+// ══════════════════════════════════════════════════
+function wireEvents() {
+  // Auth
+  el('login-btn').onclick     = handleLogin;
+  el('register-btn').onclick  = handleRegister;
+  el('show-register').onclick = ()=>{ el('login-form').style.display='none'; el('register-form').style.display=''; authMsg('',''); };
+  el('show-login').onclick    = ()=>{ el('register-form').style.display='none'; el('login-form').style.display=''; authMsg('',''); };
+  el('login-email').onkeydown = e=>{ if(e.key==='Enter') el('login-pass').focus(); };
+  el('login-pass').onkeydown  = e=>{ if(e.key==='Enter') handleLogin(); };
+  el('reg-pass').onkeydown    = e=>{ if(e.key==='Enter') el('reg-conf').focus(); };
+  el('reg-conf').onkeydown    = e=>{ if(e.key==='Enter') handleRegister(); };
+
+  // Pending
+  el('pending-signout').onclick = ()=>sb.auth.signOut();
+
+  // DB header
+  el('admin-btn').onclick    = loadAdmin;
+  el('db-signout').onclick   = ()=>sb.auth.signOut();
+
+  // Filters
+  el('filter-toggle-btn').onclick = toggleFilters;
+  el('clear-filters-btn').onclick = clearAllFilters;
+  let searchTimer=null;
+  el('search-input').oninput = e=>{
+    clearTimeout(searchTimer);
+    searchTimer=setTimeout(()=>{ filters.search=e.target.value; resetAndLoad(); }, 400);
+  };
+  ['f-service','f-country','f-type','f-spot','f-ops'].forEach(id=>{
+    const key = id==='f-service'?'service':id==='f-country'?'country':
+                id==='f-type'?'aircraft_type':id==='f-spot'?'spot':'ops';
+    // special: service filter needs mapping
+    el(id).onchange = e=>{
+      if(id==='f-service'){
+        filters.service=e.target.value; // 'US','UK','WORLD',''
+      } else {
+        filters[key]=e.target.value;
+      }
+      updateFilterBtn();
+      resetAndLoad();
+    };
+  });
+
+  // Add modal
+  // Add modal wired via inline onclick in HTML
+
+  // Edit modal
+  // Edit modal wired via inline onclick in HTML
+
+  // Admin
+  el('admin-to-db').onclick   = ()=>showView('db');
+  el('admin-signout').onclick = ()=>sb.auth.signOut();
+  el('tab-pending').onclick   = ()=>{ adminTab='pending'; el('tab-pending').classList.add('active'); el('tab-all').classList.remove('active'); renderUserList(); };
+  el('tab-all').onclick       = ()=>{ adminTab='all'; el('tab-all').classList.add('active'); el('tab-pending').classList.remove('active'); renderUserList(); };
+
+  // Pre-build country datalist immediately so it's available when Add modal first opens
+  (function() {
+    let dl = document.getElementById('dl-countries');
+    if(!dl){ dl=document.createElement('datalist'); dl.id='dl-countries'; document.body.appendChild(dl); }
+    dl.innerHTML='';
+    KNOWN_COUNTRIES.forEach(c => {
+      const o=document.createElement('option'); o.value=c; dl.appendChild(o);
+    });
+  })();
+
+  // Mobile title truncation
+  const setTitle=()=>{
+    el('header-title').textContent=window.innerWidth<640?'✈ MIL AVIATION DB':'✈ MILITARY AVIATION SPOTTERS DATABASE';
+  };
+  setTitle();
+  window.addEventListener('resize', setTitle);
+}
+
+// ══════════════════════════════════════════════════
+// AUTH STATE LISTENER
+// ══════════════════════════════════════════════════
+async function onSession(session) {
+  if(!session){ showView('auth'); profile=null; return; }
+  try {
+    profile = await loadProfile();
+    if(!profile || profile.role==='pending'){
+      showView('pending');
+      el('pending-email').textContent='Signed in as: '+(profile?.email||session.user.email);
+      return;
+    }
+    const roleColor = profile.role==='admin'?'#a78bfa':profile.role==='editor'?'#f59e0b':'#4ade80';
+    el('user-role-badge').textContent  = profile.role.toUpperCase();
+    el('user-role-badge').style.color  = roleColor;
+    const canEdit = profile.role==='editor'||profile.role==='admin';
+    const isAdmin = profile.role==='admin';
+    el('add-btn').style.display   = canEdit?'':'none';
+    el('admin-btn').style.display = isAdmin?'':'none';
+    showView('db');
+    initIntersectionObserver();
+    await loadFirst();
+  } catch(e) {
+    // Show error on login screen so user knows what happened
+    authMsg('error', 'Sign in failed: ' + (e.message || 'Unknown error. Please try again.'));
+    const btn = el('login-btn');
+    if(btn) btn.textContent = 'SIGN IN';
+    showView('auth');
+    profile = null;
+  }
+}
+
+// ══════════════════════════════════════════════════
+// BOOTSTRAP
+// ══════════════════════════════════════════════════
+document.addEventListener("DOMContentLoaded", function() {
+  wireEvents();
+  if(sb && sb.auth) {
+    sb.auth.onAuthStateChange(function(_event, session) { onSession(session); });
+    sb.auth.getSession().then(function(result) { onSession(result.data.session); });
+  }
+});
+</script>
+
+</body>
+</html>
