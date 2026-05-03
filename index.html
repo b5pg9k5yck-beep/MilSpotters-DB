@@ -539,7 +539,6 @@
 
   <div id="records-container">
 
-
 <!-- Desktop table -->
 <table class="desktop-table">
   <thead>
@@ -563,7 +562,6 @@
 <!-- Loading state -->
 <div id="loading-msg" style="padding:60px;text-align:center;color:#334155;letter-spacing:0.15em">LOADING…</div>
 <div id="empty-msg" style="padding:60px;text-align:center;color:#334155;letter-spacing:0.12em;display:none">NO RECORDS MATCH YOUR FILTERS</div>
-
 
   </div>
 
@@ -1007,6 +1005,7 @@ window.supabase = null;
 // ==================================================
 // CONFIGURATION  -  fill in your Supabase details here
 // ==================================================
+
 const SUPABASE_URL  = 'https://ielbsqnwftzlngnbkvbp.supabase.co';
 const SUPABASE_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImllbGJzcW53ZnR6bG5nbmJrdmJwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzcwNDM0OTgsImV4cCI6MjA5MjYxOTQ5OH0.TCIuD9SEqTJd7XNRqYG9te68ljdUKLTGPBebNHqwVt0';
 // Initialise Supabase client immediately  -  not in DOMContentLoaded
@@ -1417,14 +1416,63 @@ function updateScrollEnd() {
   el('all-loaded-msg').textContent = `-- ALL ${totalCount.toLocaleString()} RECORDS LOADED --`;
 }
 
-function buildKnownLists(data) {
+async function buildKnownLists(data) {
   if(knownTypes.length) return; // only build once
+
+  // Start with values from first batch
   knownTypes     = [...new Set(data.map(r=>r.aircraft_type).filter(Boolean))].sort();
   knownSpots     = [...new Set(data.map(r=>r.spot).filter(Boolean))].sort();
   knownOps       = [...new Set(data.map(r=>r.ops).filter(Boolean))].sort();
   knownCountries = [...new Set(data.map(r=>r.country).filter(Boolean))].sort();
   populateFilterOptions();
   buildDatalistOptions();
+
+  // Then fetch ALL distinct values from Supabase and rebuild
+  try {
+    const sessionKey = 'sb-' + SUPABASE_URL.replace(/https?:\/\//, '').split('.')[0] + '-auth-token';
+    let accessToken = SUPABASE_ANON;
+    try {
+      const stored = JSON.parse(localStorage.getItem(sessionKey) || 'null');
+      if(stored && stored.access_token) accessToken = stored.access_token;
+    } catch(_) {}
+
+    const headers = { 'apikey': SUPABASE_ANON, 'Authorization': 'Bearer ' + accessToken };
+
+    // Fetch all distinct values for each filter column
+    const fetchDistinct = async (col) => {
+      const res = await fetch(
+        SUPABASE_URL + '/rest/v1/sightings?select=' + col + '&limit=10000',
+        { headers }
+      );
+      if(!res.ok) return [];
+      const rows = await res.json();
+      return [...new Set(rows.map(r=>r[col]).filter(Boolean))].sort((a,b)=>a.localeCompare(b, undefined, {sensitivity:'base'}));
+    };
+
+    const [types, spots, ops, countries] = await Promise.all([
+      fetchDistinct('aircraft_type'),
+      fetchDistinct('spot'),
+      fetchDistinct('ops'),
+      fetchDistinct('country'),
+    ]);
+
+    // Rebuild dropdowns with complete data
+    knownTypes     = types;
+    knownSpots     = spots;
+    knownOps       = ops;
+    knownCountries = countries;
+
+    // Clear and repopulate filter dropdowns
+    ['f-type','f-spot','f-ops','f-country'].forEach(id => {
+      const sel = el(id);
+      // Keep the first "All" option, remove the rest
+      while(sel.options.length > 1) sel.remove(1);
+    });
+    populateFilterOptions();
+    buildDatalistOptions();
+  } catch(e) {
+    console.warn('Could not fetch all filter values:', e.message);
+  }
 }
 
 function populateFilterOptions() {
