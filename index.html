@@ -410,6 +410,7 @@
     <div class="auth-title">MILITARY AVIATION SPOTTERS</div>
     <div class="auth-sub">DATABASE  -  UK AIRBASES 1988–2018</div>
 
+```
 <div id="auth-error"  class="auth-error"  style="display:none"></div>
 <div id="auth-success"class="auth-success"style="display:none"></div>
 
@@ -439,7 +440,7 @@
   <button class="btn-primary" id="register-btn">REQUEST ACCESS</button>
   <button class="btn-secondary" id="show-login">BACK TO SIGN IN</button>
 </div>
-
+```
 
   </div>
 </div>
@@ -538,7 +539,7 @@
 
   <div id="records-container">
 
-
+```
 <!-- Desktop table -->
 <table class="desktop-table">
   <thead>
@@ -562,7 +563,7 @@
 <!-- Loading state -->
 <div id="loading-msg" style="padding:60px;text-align:center;color:#334155;letter-spacing:0.15em">LOADING…</div>
 <div id="empty-msg" style="padding:60px;text-align:center;color:#334155;letter-spacing:0.12em;display:none">NO RECORDS MATCH YOUR FILTERS</div>
-
+```
 
   </div>
 
@@ -1008,7 +1009,6 @@ window.supabase = null;
 // ==================================================
 const SUPABASE_URL  = 'https://ielbsqnwftzlngnbkvbp.supabase.co';
 const SUPABASE_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImllbGJzcW53ZnR6bG5nbmJrdmJwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzcwNDM0OTgsImV4cCI6MjA5MjYxOTQ5OH0.TCIuD9SEqTJd7XNRqYG9te68ljdUKLTGPBebNHqwVt0';
-
 // Initialise Supabase client immediately  -  not in DOMContentLoaded
 // This ensures sb is ready before any user interaction
 var _sbError = null;
@@ -1182,9 +1182,21 @@ function authMsg(type, msg) {
 async function loadProfile() {
   const { data: { user } } = await sb.auth.getUser();
   if(!user) return null;
-  const { data, error } = await sb.from('profiles').select('*').eq('id',user.id).single();
-  if(error) throw error;
-  return data;
+  const token = user.access_token || SUPABASE_ANON;
+  const session = JSON.parse(localStorage.getItem('sb-' + SUPABASE_URL.replace(/https?:\/\//, '').split('.')[0] + '-auth-token') || '{}');
+  const accessToken = (session && session.access_token) ? session.access_token : SUPABASE_ANON;
+  const res = await fetch(
+    SUPABASE_URL + '/rest/v1/profiles?id=eq.' + encodeURIComponent(user.id) + '&select=*',
+    {
+      headers: {
+        'apikey': SUPABASE_ANON,
+        'Authorization': 'Bearer ' + accessToken,
+        'Accept': 'application/vnd.pgrst.object+json'
+      }
+    }
+  );
+  if(!res.ok) throw new Error('Failed to load profile: ' + res.status);
+  return await res.json();
 }
 
 async function handleLogin() {
@@ -1243,28 +1255,55 @@ async function handleRegister() {
 // ==================================================
 async function fetchBatch(page) {
   const f = buildFiltersObj();
-  let q = sb.from('sightings')
-    .select('*',{count:'exact'})
-    .order('registration',{ascending:true})
-    .range(page*BATCH, (page+1)*BATCH-1);
+  const from = page * BATCH;
+  const to   = from + BATCH - 1;
 
+  // Build URL directly - more reliable than query builder chaining
+  let path = '/rest/v1/sightings?select=*&order=registration.asc';
+
+  // Search filter
   if(f.search) {
-    q = q.or([
-      'registration','callsign','type','aircraft_type','detachment','ops','spot','country'
-    ].map(c=>`${c}.ilike.%${f.search}%`).join(','));
+    const cols = ['registration','callsign','type','aircraft_type','detachment','ops','spot','country'];
+    const terms = cols.map(c => c + '.ilike.*' + encodeURIComponent(f.search) + '*').join(',');
+    path += '&or=(' + terms + ')';
   }
-  if(f.aircraft_type) q = q.eq('aircraft_type', f.aircraft_type);
-  if(f.spot)          q = q.eq('spot', f.spot);
-  if(f.ops)           q = q.eq('ops', f.ops);
-  if(f.country)       q = q.eq('country', f.country);
-  if(f.service !== undefined && f.service !== '') {
-    if(f.service==='US')        q = q.not('service','in','("UK","WORLD")');
-    else if(f.service==='UK')   q = q.eq('service','UK');
-    else if(f.service==='WORLD')q = q.eq('service','WORLD');
+
+  // Exact match filters
+  if(f.aircraft_type) path += '&aircraft_type=eq.' + encodeURIComponent(f.aircraft_type);
+  if(f.spot)          path += '&spot=eq.'           + encodeURIComponent(f.spot);
+  if(f.ops)           path += '&ops=eq.'            + encodeURIComponent(f.ops);
+  if(f.country)       path += '&country=eq.'        + encodeURIComponent(f.country);
+  if(f.service) {
+    if      (f.service === 'UK')    path += '&service=eq.UK';
+    else if (f.service === 'WORLD') path += '&service=eq.WORLD';
+    else if (f.service === 'US')    path += '&service=neq.UK&service=neq.WORLD';
   }
-  const { data, error, count } = await q;
-  if(error) throw error;
-  return { data: data||[], count: count||0 };
+
+  const token = (sb && sb._session && sb._session.access_token) ? sb._session.access_token : SUPABASE_ANON;
+  const res = await fetch(SUPABASE_URL + path, {
+    headers: {
+      'apikey':        SUPABASE_ANON,
+      'Authorization': 'Bearer ' + token,
+      'Range':         from + '-' + to,
+      'Prefer':        'count=exact'
+    }
+  });
+
+  if(!res.ok) {
+    const text = await res.text();
+    let msg = 'Error ' + res.status;
+    try { const j = JSON.parse(text); msg = j.message || j.error || msg; } catch(_) {}
+    throw new Error(msg);
+  }
+
+  const data = await res.json();
+
+  // Parse total count from Content-Range header
+  let count = data.length;
+  const cr = res.headers.get('content-range');
+  if(cr) { const m = cr.match(/\/(\d+)$/); if(m) count = parseInt(m[1]); }
+
+  return { data: data || [], count };
 }
 
 async function checkDuplicate(reg, country) {
