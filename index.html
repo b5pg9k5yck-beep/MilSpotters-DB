@@ -738,7 +738,7 @@ max-height: 90vh;
   <input class="field-input" type="email" id="login-email" placeholder="you@example.com" autocomplete="email"/>
   <label class="field-label" for="login-pass">PASSWORD</label>
   <input class="field-input" type="password" id="login-pass" placeholder="••••••••" autocomplete="current-password"/>
-  <button class="btn-primary" id="login-btn">SIGN IN</button>
+  <button class="btn-primary" id="login-btn" onclick="handleLogin()">SIGN IN</button>
   <div class="auth-toggle">No account? <span class="auth-link" id="show-register">Request access</span></div>
 </div>
 
@@ -1153,9 +1153,17 @@ async function handleLogin() {
   const email = el('login-email').value.trim();
   const pass  = el('login-pass').value;
   if(!email||!pass) return authMsg('error','Please enter your email and password.');
+
   el('login-btn').textContent = 'SIGNING IN…';
+
+  // Diagnose sb state visibly
+  if(typeof sb === 'undefined' || !sb) {
+    authMsg('error', 'App not ready (sb=' + typeof sb + '). Please hard-refresh the page.');
+    el('login-btn').textContent = 'SIGN IN';
+    return;
+  }
+
   try {
-    if(!sb) { authMsg('error','App not initialised. Please refresh the page.'); el('login-btn').textContent='SIGN IN'; return; }
     const result = await sb.auth.signInWithPassword({email, password:pass});
     if(result && result.error) {
       authMsg('error', result.error.message || 'Login failed. Check your email and password.');
@@ -1164,7 +1172,7 @@ async function handleLogin() {
     }
     // onAuthStateChange will handle the rest
   } catch(e) {
-    authMsg('error', e.message||'Login failed.');
+    authMsg('error', 'Exception: ' + (e.message || String(e)));
     el('login-btn').textContent = 'SIGN IN';
   }
 }
@@ -2148,7 +2156,6 @@ async function onSession(session) {
       el('pending-email').textContent='Signed in as: '+(profile?.email||session.user.email);
       return;
     }
-    // Set up UI based on role
     const roleColor = profile.role==='admin'?'#a78bfa':profile.role==='editor'?'#f59e0b':'#4ade80';
     el('user-role-badge').textContent  = profile.role.toUpperCase();
     el('user-role-badge').style.color  = roleColor;
@@ -2160,8 +2167,12 @@ async function onSession(session) {
     initIntersectionObserver();
     await loadFirst();
   } catch(e) {
-    console.error(e);
+    // Show error on login screen so user knows what happened
+    authMsg('error', 'Sign in failed: ' + (e.message || 'Unknown error. Please try again.'));
+    const btn = el('login-btn');
+    if(btn) btn.textContent = 'SIGN IN';
     showView('auth');
+    profile = null;
   }
 }
 
