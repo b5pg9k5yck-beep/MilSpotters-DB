@@ -410,6 +410,7 @@
     <div class="auth-title">MILITARY AVIATION SPOTTERS</div>
     <div class="auth-sub">DATABASE  -  UK AIRBASES 1988–2018</div>
 
+```
 <div id="auth-error"  class="auth-error"  style="display:none"></div>
 <div id="auth-success"class="auth-success"style="display:none"></div>
 
@@ -439,6 +440,7 @@
   <button class="btn-primary" id="register-btn">REQUEST ACCESS</button>
   <button class="btn-secondary" id="show-login">BACK TO SIGN IN</button>
 </div>
+```
 
   </div>
 </div>
@@ -492,6 +494,7 @@
     <div class="filter-row">
       <input class="search-input" type="search" id="search-input" placeholder="Search serial, callsign, type, country…"/>
       <button class="filter-btn" id="filter-toggle-btn" style="border:1px solid var(--border2);background:transparent;color:var(--text3)">Filters</button>
+      <button class="filter-btn" onclick="exportRecords()" style="border:1px solid var(--cyan);background:#38bdf822;color:var(--cyan);white-space:nowrap">Export</button>
       <div class="counter-badge">
         <span style="color:var(--amber);font-weight:800" id="loaded-count">0</span>
         <span style="color:#334155" id="total-label"></span>
@@ -537,6 +540,7 @@
 
   <div id="records-container">
 
+```
 <!-- Desktop table -->
 <table class="desktop-table">
   <thead>
@@ -560,6 +564,7 @@
 <!-- Loading state -->
 <div id="loading-msg" style="padding:60px;text-align:center;color:#334155;letter-spacing:0.15em">LOADING…</div>
 <div id="empty-msg" style="padding:60px;text-align:center;color:#334155;letter-spacing:0.12em;display:none">NO RECORDS MATCH YOUR FILTERS</div>
+```
 
   </div>
 
@@ -2138,6 +2143,126 @@ function clearAllFilters() {
   el('f-type').value=''; el('f-spot').value=''; el('f-ops').value='';
   updateFilterBtn();
   resetAndLoad();
+}
+
+async function exportRecords() {
+  const btn = document.querySelector('[onclick="exportRecords()"]');
+  const original = btn.textContent;
+  btn.textContent = 'Exporting...';
+  btn.style.opacity = '0.6';
+
+  try {
+    // Fetch ALL matching records (no pagination limit)
+    const f = buildFiltersObj();
+    let path = '/rest/v1/sightings?select=*&order=registration.asc&limit=10000';
+
+    if(f.search) {
+      const cols = ['registration','callsign','type','aircraft_type','detachment','ops','spot','country'];
+      const terms = cols.map(c => c + '.ilike.*' + encodeURIComponent(f.search) + '*').join(',');
+      path += '&or=(' + terms + ')';
+    }
+    if(f.aircraft_type) path += '&aircraft_type=eq.' + encodeURIComponent(f.aircraft_type);
+    if(f.spot)          path += '&spot=eq.'          + encodeURIComponent(f.spot);
+    if(f.ops)           path += '&ops=eq.'           + encodeURIComponent(f.ops);
+    if(f.country)       path += '&country=eq.'       + encodeURIComponent(f.country);
+    if(f.service) {
+      if      (f.service === 'UK')    path += '&service=eq.UK';
+      else if (f.service === 'WORLD') path += '&service=eq.WORLD';
+      else if (f.service === 'US')    path += '&service=neq.UK&service=neq.WORLD';
+    }
+
+    const sessionKey = 'sb-' + SUPABASE_URL.replace(/https?:\/\//, '').split('.')[0] + '-auth-token';
+    let accessToken = SUPABASE_ANON;
+    try {
+      const stored = JSON.parse(localStorage.getItem(sessionKey) || 'null');
+      if(stored && stored.access_token) accessToken = stored.access_token;
+    } catch(_) {}
+
+    const res = await fetch(SUPABASE_URL + path, {
+      headers: { 'apikey': SUPABASE_ANON, 'Authorization': 'Bearer ' + accessToken }
+    });
+
+    if(!res.ok) throw new Error('Export failed: ' + res.status);
+    const data = await res.json();
+
+    if(!data || !data.length) {
+      alert('No records to export with current filters.');
+      return;
+    }
+
+    // Build text file content
+    const cols = [
+      {key:'registration',  label:'Registration'},
+      {key:'country',       label:'Country'},
+      {key:'aircraft_type', label:'Type'},
+      {key:'type',          label:'Variant'},
+      {key:'callsign',      label:'Callsign'},
+      {key:'tail_code',     label:'Tail Code'},
+      {key:'ops',           label:'Service'},
+      {key:'detachment',    label:'Unit/Sqn'},
+      {key:'location',      label:'Home Base'},
+      {key:'spot',          label:'Airfield'},
+      {key:'date',          label:'Date'},
+      {key:'colour',        label:'Colour'},
+      {key:'name',          label:'Notes'},
+    ];
+
+    // Build filter description for header
+    const activeFilters = [];
+    if(f.search)        activeFilters.push('Search: ' + f.search);
+    if(f.aircraft_type) activeFilters.push('Type: ' + f.aircraft_type);
+    if(f.country)       activeFilters.push('Country: ' + f.country);
+    if(f.spot)          activeFilters.push('Airfield: ' + f.spot);
+    if(f.ops)           activeFilters.push('Service: ' + f.ops);
+    if(f.service)       activeFilters.push('Nation: ' + f.service);
+
+    const now = new Date().toISOString().split('T')[0];
+    const sep = '-'.repeat(100);
+
+    let text = 'MILITARY AVIATION SPOTTERS DATABASE\n';
+    text += 'Export date: ' + now + '\n';
+    text += 'Records: ' + data.length + '\n';
+    if(activeFilters.length) text += 'Filters: ' + activeFilters.join(' | ') + '\n';
+    text += sep + '\n\n';
+
+    // Column widths
+    const widths = cols.map(c => Math.max(c.label.length,
+      ...data.map(r => (r[c.key] || '').toString().length)
+    ));
+
+    // Header row
+    text += cols.map((c,i) => c.label.padEnd(widths[i])).join('  ') + '\n';
+    text += cols.map((c,i) => '-'.repeat(widths[i])).join('  ') + '\n';
+
+    // Data rows
+    data.forEach(r => {
+      text += cols.map((c,i) => (r[c.key] || '').toString().padEnd(widths[i])).join('  ') + '\n';
+    });
+
+    text += '\n' + sep + '\n';
+    text += 'End of export - ' + data.length + ' records\n';
+
+    // Download
+    const filename = 'spotters-export-' + now +
+      (activeFilters.length ? '-' + (f.aircraft_type||f.country||f.spot||f.service||'filtered').replace(/\s+/g,'-') : '') +
+      '.txt';
+
+    const blob = new Blob([text], {type: 'text/plain;charset=utf-8'});
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href     = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+
+  } catch(e) {
+    alert('Export error: ' + e.message);
+  } finally {
+    btn.textContent = original;
+    btn.style.opacity = '1';
+  }
 }
 
 function resetAndLoad() {
