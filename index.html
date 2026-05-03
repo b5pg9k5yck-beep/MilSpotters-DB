@@ -7,6 +7,8 @@
 <meta name="theme-color" content="#080f1e"/>
 <title>Military Aviation Spotters Database v8</title>
 <script>
+// Pre-assign so it exists even if IIFE fails
+window.supabase = null;
 // ═══════════════════════════════════════════════════════════
 // Embedded Supabase Client v2 — no CDN required
 // Handles: auth, REST queries, RPC, realtime session
@@ -974,9 +976,8 @@ max-height: 90vh;
 // ══════════════════════════════════════════════════
 // CONFIGURATION — fill in your Supabase details here
 // ══════════════════════════════════════════════════
-  
 const SUPABASE_URL  = 'https://ielbsqnwftzlngnbkvbp.supabase.co';
-  const SUPABASE_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImllbGJzcW53ZnR6bG5nbmJrdmJwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzcwNDM0OTgsImV4cCI6MjA5MjYxOTQ5OH0.TCIuD9SEqTJd7XNRqYG9te68ljdUKLTGPBebNHqwVt0'; 
+const SUPABASE_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImllbGJzcW53ZnR6bG5nbmJrdmJwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzcwNDM0OTgsImV4cCI6MjA5MjYxOTQ5OH0.TCIuD9SEqTJd7XNRqYG9te68ljdUKLTGPBebNHqwVt0';
 
 // ══════════════════════════════════════════════════
 // CONSTANTS
@@ -2160,11 +2161,11 @@ async function onSession(session) {
 // BOOTSTRAP
 // ══════════════════════════════════════════════════
 document.addEventListener("DOMContentLoaded", function() {
-  if(typeof supabase === 'undefined' || typeof supabase.createClient !== 'function') {
+  if(!supabase || typeof supabase.createClient !== 'function') {
     document.getElementById('auth-view').innerHTML =
       '<div style="padding:60px 20px;text-align:center;font-family:monospace">' +
       '<div style="font-size:28px;margin-bottom:16px">⚠</div>' +
-      '<div style="font-size:14px;margin-bottom:8px;color:#f59e0b">Supabase client not initialised</div>' +
+      '<div style="font-size:14px;margin-bottom:8px;color:#f59e0b">supabase=' + typeof supabase + ' createClient=' + (supabase ? typeof supabase.createClient : 'n/a') + '</div>' +
       '<div style="font-size:11px;color:#475569;line-height:1.8">Try a hard refresh: Ctrl+Shift+R (Windows) or Cmd+Shift+R (Mac)</div>' +
       '</div>';
     document.getElementById('auth-view').classList.add('active');
